@@ -87,6 +87,10 @@ extra_sources:
 filters:
   max_age_days: 14
 
+  # You can't relocate: on these boards the remote flag is reliable, so
+  # remote == false means on-site/hybrid -> dropped.
+  require_remote_sites: [arbeitnow, himalayas, jobicy, remotive]
+
   # title must match at least one of these
   title_include:
     - '\.net|dotnet|c#|csharp|asp\.?net'
@@ -170,11 +174,13 @@ scoring:
     'no (visa )?sponsorship|(not|unable to) (offer|provide) (visa )?sponsorship': -10
     'fluent (in )?german|german \(?(b2|c1|c2)|deutschkenntnisse|flie[ßs]end(e)? deutsch': -25
     'fluent (in )?dutch|dutch speaking': -25
+    '(german|french|italian|dutch|spanish|polish)[- ]speaking|english and (german|french|italian|dutch|spanish)|\b(cdi|cdd)\b': -25
     'fluent (in )?arabic|arabic (speaker|speaking)': -15
     '\b(on-?site|in-?office|office-based)\b': -15   # you can't relocate right now
     '\bhybrid\b': -10
 
   remote_bonus: 10      # is_remote flag or "remote"/"uzaktan" in text
+  not_remote_penalty: -15   # no remote flag and the word "remote" appears nowhere
   turkish_bonus: 20     # posting written in Turkish -> your edge
   fresh_bonus: 5        # posted in the last 2 days
   target_bonus:

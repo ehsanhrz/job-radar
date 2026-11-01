@@ -527,3 +527,39 @@ def test_run_cooldown_ignores_killed_run(db, tmp_path, monkeypatch):
     bot.handle_update(db, tg, _settings(tmp_path), {"message": {"chat": {"id": 42}, "text": "/run"}},
                       allow_run=True)
     assert started == [1]
+
+
+# ---------------- remote-only (user can't relocate) ----------------
+def test_onsite_arbeitnow_jobs_are_dropped(ev):
+    onsite = job("Software Engineer Fullstack - CDI Paris - Theodo FinTech", "C# fintech",
+                 site="arbeitnow", is_remote=False, location="Paris")
+    assert ev.evaluate(onsite).filter_reason == "not remote (arbeitnow)"
+    remote = job("Senior Backend Engineer (.NET)", "C#", site="arbeitnow", is_remote=True, location="Berlin")
+    assert ev.evaluate(remote).status != "filtered"
+
+
+def test_no_sign_of_remote_is_penalised(ev):
+    a = ev.evaluate(job("Senior .NET Developer", "C# SQL Server", location="Istanbul"))
+    b = ev.evaluate(job("Senior .NET Developer", "C# SQL Server, fully remote", location="Istanbul"))
+    assert any("no sign of remote" in r for r in a.reasons)
+    assert b.score - a.score == 25 + 15  # +10 remote, +15 worldwide-ish phrase vs -15
+
+
+def test_other_language_requirement_penalised(ev):
+    v = ev.evaluate(job("E-invoicing & EDI Integration Engineer - with English and German/French/Italian",
+                        "integration, remote"))
+    assert any("english and german" in r for r in v.reasons)
+
+
+def test_resume_slot_is_consumed_and_real_times_kept(db):
+    from datetime import datetime, timedelta, timezone
+    from jobradar.serve import (FINISHED_KEY, LAST_RUN_KEY, NEXT_RUN_KEY, _seconds_until_next,
+                                reschedule_interrupted)
+    killed_at = (datetime.now(timezone.utc) - timedelta(minutes=12)).isoformat(timespec="seconds")
+    db.set_meta(LAST_RUN_KEY, killed_at)
+    assert reschedule_interrupted(db, 6 * 3600)
+    assert db.get_meta(LAST_RUN_KEY) == killed_at          # no fake timestamps anymore
+    assert 240 <= _seconds_until_next(db, 6 * 3600, 0) <= 310
+    db.set_meta(NEXT_RUN_KEY, None)                         # what run_once does at start
+    db.set_meta(LAST_RUN_KEY, datetime.now(timezone.utc).isoformat())
+    assert _seconds_until_next(db, 6 * 3600, 0) > 5.9 * 3600

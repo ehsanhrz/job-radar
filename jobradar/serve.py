@@ -26,6 +26,7 @@ log = logging.getLogger("serve")
 
 LAST_RUN_KEY = "last_run_at"
 FINISHED_KEY = "last_run_finished_at"
+NEXT_RUN_KEY = "next_run_at"  # one-off override (resume after a killed run)
 RESUME_AFTER_SEC = 300
 
 
@@ -37,17 +38,21 @@ def run_was_interrupted(db: DB) -> bool:
 
 def reschedule_interrupted(db: DB, interval_s: float) -> bool:
     """Call once at boot: if the previous run was killed, run again in ~5 min
-    instead of waiting a full interval."""
+    instead of waiting a full interval. Real timestamps are left untouched."""
     if not run_was_interrupted(db):
         return False
     from datetime import timedelta
-    fake_last = datetime.now(timezone.utc) - timedelta(seconds=interval_s - RESUME_AFTER_SEC)
-    db.set_meta(LAST_RUN_KEY, fake_last.isoformat(timespec="seconds"))
-    db.set_meta(FINISHED_KEY, fake_last.isoformat(timespec="seconds"))
+    resume = datetime.now(timezone.utc) + timedelta(seconds=RESUME_AFTER_SEC)
+    db.set_meta(NEXT_RUN_KEY, resume.isoformat(timespec="seconds"))
+    # mark the killed run as handled so it isn't rescheduled again on the next boot
+    db.set_meta(FINISHED_KEY, db.get_meta(LAST_RUN_KEY))
     return True
 
 
 def _seconds_until_next(db: DB, interval_s: float, jitter_s: float) -> float:
+    override = db.get_meta(NEXT_RUN_KEY)
+    if override:
+        return max(60.0, (datetime.fromisoformat(override) - datetime.now(timezone.utc)).total_seconds())
     last = db.get_meta(LAST_RUN_KEY)
     if not last:
         return 60.0  # fresh install: first run a minute after boot

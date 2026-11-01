@@ -71,6 +71,34 @@ def cmd_rescore(args, settings) -> None:
     print(f"rescored: {out['changed']} jobs changed. queued now: {out['now_queued']}")
 
 
+def cmd_probe(args, settings) -> None:
+    """Check from THIS machine what each HTML board returns and what we parse."""
+    import requests
+    from .collectors import html_boards as hb
+    s = requests.Session()
+    srcs = settings.section("extra_sources")
+    for board, spec in hb.BOARDS.items():
+        urls = (srcs.get(board) or {}).get("list_urls") or []
+        print(f"\n=== {board} ({len(urls)} list urls)")
+        first = None
+        for url in urls:
+            try:
+                jobs = spec["parse_list"](hb._get(s, url))
+                remote = sum(1 for j in jobs if j.is_remote)
+                print(f"  OK   {len(jobs):>3} jobs ({remote} remote)  {url}")
+                first = first or (jobs[0] if jobs else None)
+            except Exception as e:  # noqa: BLE001
+                print(f"  FAIL {type(e).__name__}: {e}  {url}")
+        if first:
+            print(f"  sample: {first.title} | {first.company} | {first.location} | remote={first.is_remote}")
+            try:
+                d = hb._fetch_detail(s, board, first)
+                print(f"  detail: {len(d.get('description') or '')} chars of description, "
+                      f"fields={sorted(k for k, v in d.items() if v)}")
+            except Exception as e:  # noqa: BLE001
+                print(f"  detail FAIL {type(e).__name__}: {e}")
+
+
 def cmd_test_telegram(args, settings) -> None:
     from .telegram import Telegram
     tg = Telegram(settings.telegram_token, settings.telegram_chat_id, settings.telegram_proxy)
@@ -113,6 +141,7 @@ def main() -> None:
     sub.add_parser("stats", help="print counts and source health")
     sub.add_parser("rescore", help="re-apply filters after editing config.yaml")
     sub.add_parser("test-telegram", help="send a test message")
+    sub.add_parser("probe", help="check what Kariyer.net / Jaabz return from this machine")
     sub.add_parser("chat-id", help="find your TELEGRAM_CHAT_ID")
 
     args = p.parse_args()
@@ -120,7 +149,7 @@ def main() -> None:
     settings = load_settings(args.config)
     {
         "run": cmd_run, "loop": cmd_loop, "serve": cmd_serve, "bot": cmd_bot, "stats": cmd_stats,
-        "rescore": cmd_rescore, "test-telegram": cmd_test_telegram, "chat-id": cmd_chat_id,
+        "rescore": cmd_rescore, "test-telegram": cmd_test_telegram, "probe": cmd_probe, "chat-id": cmd_chat_id,
     }[args.cmd](args, settings)
 
 

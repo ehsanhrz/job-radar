@@ -33,10 +33,11 @@ class Telegram:
         if proxy:
             self.s.proxies = {"http": proxy, "https": proxy}
 
-    def _call(self, method: str, timeout: int = 30, **params: Any) -> Any:
+    def _call(self, method: str, *, http_timeout: int = 30, **params: Any) -> Any:
+        """params go to Telegram as JSON; http_timeout is our socket timeout."""
         for attempt in range(3):
             try:
-                r = self.s.post(f"{self.base}/{method}", json=params, timeout=timeout)
+                r = self.s.post(f"{self.base}/{method}", json=params, timeout=http_timeout)
             except requests.RequestException as e:
                 if attempt == 2:
                     raise TelegramError(f"{method}: {e}") from e
@@ -80,7 +81,7 @@ class Telegram:
         params: dict[str, Any] = dict(timeout=timeout, allowed_updates=["message", "callback_query"])
         if offset is not None:
             params["offset"] = offset
-        return self._call("getUpdates", timeout=timeout + 15, **params)
+        return self._call("getUpdates", http_timeout=timeout + 15, **params)
 
     def me(self) -> dict:
         return self._call("getMe")

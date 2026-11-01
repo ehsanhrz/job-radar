@@ -89,6 +89,8 @@ On a PaaS (auto-deploy on git push):
 | `/stats`   | counts by status, source health, top filter reasons |
 | `/saved`   | your ⭐ jobs |
 | `/applied` | what you applied to |
+| `/vetoed`  | jobs the AI dropped, with the quoted reason |
+| `/rescore` | re-apply current rules to unsent jobs and send new matches |
 | `/run`     | scrape now; within 30 min of the last run it asks for `/run force` |
 
 Every job message has **✅ Applied / ⏭ Skip / ⭐ Save**, plus **↩️ Undo** after you tap one.
@@ -115,7 +117,7 @@ Jobs that pass the keyword filter (plus borderline ones near `min_score`) get re
 by an LLM, which knows your profile from `AI_PROFILE`. It returns:
 
 - **fit 0–10** → final score = keyword score + (fit − 5) × `ai.weight`
-- **feasible from Iran?** yes / no / unclear. A "no" vetoes the job (hidden location rules, on-site...).
+- **feasible from Iran?** yes / no / unclear. A "no" only vetoes the job if the AI **quotes the restricting sentence and that exact text is in the posting**. Guesses like "sanctions" can't veto anything.
 - **red flags**, e.g. "needs AWS" or "German C1"
 
 The card then shows `🤖 8/10 · fintech .NET match · ✅ Iran-remote yes`.

@@ -563,3 +563,30 @@ def test_resume_slot_is_consumed_and_real_times_kept(db):
     db.set_meta(NEXT_RUN_KEY, None)                         # what run_once does at start
     db.set_meta(LAST_RUN_KEY, datetime.now(timezone.utc).isoformat())
     assert _seconds_until_next(db, 6 * 3600, 0) > 5.9 * 3600
+
+
+def test_rescore_unvetoes_jobs_without_proof(db, ev):
+    import json as _json
+    r = CollectResult()
+    r.jobs = [job("Senior .NET Developer", "C# fully remote", target="Turkey")]
+    ingest(db, ev, r)
+    jid = r.jobs[0].id
+    # simulate the old behaviour: AI vetoed without any quote
+    db.save_ai(jid, 70, 90, _json.dumps({"fit": 9, "feasible": "no", "reason": "Iran sanctions",
+                                         "flags": []}), "filtered", "ai: not feasible from Iran (x)")
+    from jobradar.pipeline import rescore_all
+    out = rescore_all(db, CFG)
+    assert out["changed"] == 1 and db.get(jid)["status"] == "queued"
+
+
+def test_vetoed_command_lists_reasons(db, ev, tmp_path):
+    import json as _json
+    from jobradar.bot import handle_update
+    r = CollectResult()
+    r.jobs = [job("Senior .NET Developer", "Must be based in the UK.", target="UAE")]
+    ingest(db, ev, r)
+    db.save_ai(r.jobs[0].id, 50, 70, _json.dumps({"fit": 9, "feasible": "no", "reason": "UK",
+               "flags": [], "evidence": "Must be based in the UK."}), "filtered", "ai: not feasible from Iran")
+    tg = FakeTG()
+    handle_update(db, tg, _settings(tmp_path), {"message": {"chat": {"id": 42}, "text": "/vetoed"}})
+    assert "Must be based in the UK" in tg.sent[-1][0]

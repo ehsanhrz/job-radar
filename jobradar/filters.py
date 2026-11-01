@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 from datetime import date
 
 from .models import Job
@@ -45,6 +46,8 @@ class Evaluator:
         self.max_age_days = f.get("max_age_days")
         # sites whose remote flag is reliable: is_remote == False -> drop
         self.require_remote_sites = set(f.get("require_remote_sites") or [])
+        # boards you can't apply through: keep only postings linking to the company's site
+        self.direct_apply_only_sites = set(f.get("direct_apply_only_sites") or [])
 
         self.title_kw = _compile_weights(s.get("title_keywords"))
         self.text_kw = _compile_weights(s.get("text_keywords"))
@@ -69,6 +72,10 @@ class Evaluator:
         text = job.text
 
         # ---- hard filters ----
+        if job.site in self.direct_apply_only_sites:
+            host = urlsplit(job.url or "").hostname or ""
+            if job.site in host:  # still an indeed.com link -> needs an Indeed account
+                return Verdict("filtered", 0, [], f"apply only via {job.site}")
         if self.title_include and not any(p.search(title) for p in self.title_include):
             return Verdict("filtered", 0, [], "title: no include match")
         for p in self.title_exclude:

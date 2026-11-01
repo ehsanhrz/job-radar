@@ -58,11 +58,15 @@ def row_to_job(row: dict, target_name: str) -> Job | None:
     title = _val(row.get("title"))
     if not url or not title:
         return None
+    site = str(_val(row.get("site")) or "unknown")
+    # Indeed: JobSpy only fills job_url_direct when the posting links to the company's
+    # own site (apply there, no Indeed account). Use that as THE job link.
+    link = _val(row.get("job_url_direct")) if site == "indeed" else None
     return Job(
         source="jobspy",
-        site=str(_val(row.get("site")) or "unknown"),
+        site=site,
         title=str(title).strip(),
-        url=str(_val(row.get("job_url")) or url),
+        url=str(link or _val(row.get("job_url")) or url),
         company=_val(row.get("company")),
         location=_val(row.get("location")),
         description=_val(row.get("description")),

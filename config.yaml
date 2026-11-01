@@ -1,0 +1,151 @@
+# ─────────────────────────────────────────────────────────────
+#  Job Radar config. Secrets go in .env, everything else here.
+#  After editing filters/scoring:  python -m jobradar rescore
+#  All patterns are case-insensitive Python regexes. Use 'single quotes'.
+# ─────────────────────────────────────────────────────────────
+
+schedule:            # only used by `loop` (docker / VPS mode)
+  interval_hours: 6
+  jitter_minutes: 40
+
+scrape:
+  hours_old: 72              # only postings from the last N hours
+  results_per_call: 20       # per site / target / search term
+  fetch_description: true    # needed for good filtering (slower on LinkedIn)
+  delay_between_calls_sec: [4, 10]   # random pause between requests, be polite
+
+# Default search terms for every target (LinkedIn + Indeed understand OR / quotes)
+search_terms:
+  - '".NET" OR "C#"'
+  - '"backend developer" OR "backend engineer"'
+
+# Where to look. sites: linkedin | indeed | bayt | glassdoor
+# location         -> used by LinkedIn / Bayt
+# country_indeed   -> required for Indeed/Glassdoor (turkey, uae, oman, germany, netherlands, ...)
+targets:
+  - name: Turkey
+    sites: [linkedin, indeed]
+    location: 'Türkiye'
+    country_indeed: turkey
+    extra_search_terms:
+      - 'C# yazılım geliştirici'
+      - 'NestJS'
+
+  - name: UAE
+    sites: [linkedin, indeed, bayt]
+    location: 'United Arab Emirates'
+    country_indeed: uae
+
+  - name: Iraq
+    sites: [linkedin, bayt]
+    location: 'Iraq'
+
+  - name: Oman
+    sites: [linkedin, indeed, bayt]
+    location: 'Oman'
+    country_indeed: oman
+
+  - name: Germany (remote)
+    sites: [linkedin, indeed]
+    location: 'Germany'
+    country_indeed: germany
+    is_remote: true
+
+  - name: Netherlands (remote)
+    sites: [linkedin, indeed]
+    location: 'Netherlands'
+    country_indeed: netherlands
+    is_remote: true
+
+  - name: Worldwide (remote)
+    sites: [linkedin]
+    location: 'Worldwide'
+    is_remote: true
+    extra_search_terms:
+      - 'NestJS'
+
+extra_sources:
+  arbeitnow:          # free official API, Germany/EU/remote
+    enabled: true
+    pages: 3
+
+# ── Hard filters: a match = job is dropped (stored as 'filtered', see `stats`) ──
+filters:
+  max_age_days: 14
+
+  # title must match at least one of these
+  title_include:
+    - '\.net|dotnet|c#|csharp|asp\.?net'
+    - 'back.?end|nest\.?js|node\.?js|full.?stack'
+    - 'software (engineer|developer)|yaz[ıi]l[ıi]m|geli[şs]tirici'
+
+  title_exclude:
+    - '\b(intern|internship|stajyer|trainee|graduate)\b'
+    - '\b(junior|jr)\b'
+    - '\b(director|head of|vp|manager)\b'
+    - '\b(ios|android|flutter|mobile)\b'
+    - '\b(qa|tester|test automation|sdet)\b'
+    - '\b(sap|salesforce|abap)\b'
+    # other stacks, unless the title also mentions something we want
+    - '^(?!.*(\.net|c#|nest|node|full.?stack)).*\b(java|php|ruby|golang|scala|kotlin|rust|python|django|laravel)\b'
+    - '^(?!.*(\.net|c#)).*(\(go\)|\bgo (developer|engineer)\b)'
+    - '^(?!.*(\.net|c#|full|back)).*\b(front.?end|react|angular|vue)\b'
+
+  # anywhere in title/description: impossible from Iran
+  hard_exclude:
+    - 'authori[sz]ed to work in the (us|u\.s\.|united states|uk|united kingdom|eu)'
+    - '(must|required to) be (a )?(us|u\.s\.) citizen'
+    - '(security|active|secret) clearance'
+    - 'green card'
+    - '\bw-?2 only\b'
+    - 'must (be )?(reside|located|based|live|living) in (the )?(us|usa|u\.s\.|united states|uk|united kingdom|canada|eu|europe|european union)'
+    - 'right to work in (the )?(uk|united kingdom|eu|germany|netherlands)'
+    - '(eu|european) work permit'
+    - '(sanctioned|embargoed) countr'
+
+# ── Scoring: higher = better. Sent to Telegram when score >= min_score ──
+scoring:
+  min_score: 30
+
+  title_keywords:
+    '\.net|dotnet|asp\.?net': 30
+    'c#|csharp': 20
+    'nest\.?js': 15
+    '\b(senior|sr)\b|k[ıi]demli': 10
+    'back.?end': 10
+
+  text_keywords:
+    '\.net|c#': 10
+    '\.net core|\.net ([5-9]|1[0-9])|asp\.net core': 10
+    'entity framework|ef core': 5
+    'sql server|mssql|t-sql': 5
+    'mongo': 5
+    'microservice': 5
+    'docker|kubernetes|k8s': 5
+    'rabbitmq|kafka|redis': 5
+    'integration': 3
+    'nest\.?js|typescript': 5
+    'legacy|moderni[sz]': 5
+    'worldwide|anywhere in the world|work from anywhere|any (country|location)|fully remote': 15
+    '\b(b2b|contractor|freelance)\b': 5
+
+  penalties:
+    'no (visa )?sponsorship|(not|unable to) (offer|provide) (visa )?sponsorship': -10
+    'fluent (in )?german|german \(?(b2|c1|c2)|deutschkenntnisse|flie[ßs]end(e)? deutsch': -25
+    'fluent (in )?dutch|dutch speaking': -25
+    'fluent (in )?arabic|arabic (speaker|speaking)': -15
+    '\b(on-?site|in-?office|office-based)\b': -15   # you can't relocate right now
+    '\bhybrid\b': -10
+
+  remote_bonus: 10      # is_remote flag or "remote"/"uzaktan" in text
+  turkish_bonus: 20     # posting written in Turkish -> your edge
+  fresh_bonus: 5        # posted in the last 2 days
+  target_bonus:
+    Turkey: 10
+
+telegram:
+  max_per_run: 20         # the rest stay queued for the next run
+  send_run_summary: true
+
+watchdog:
+  zero_runs_alert: 3      # alert if a source returns 0 jobs N runs in a row

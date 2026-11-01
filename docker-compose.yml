@@ -1,0 +1,20 @@
+# Always-on mode (VPS): one container scrapes on a schedule,
+# the other answers Telegram buttons / commands instantly.
+services:
+  worker:
+    build: .
+    command: ["loop"]
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro   # edit config without rebuilding
+    restart: unless-stopped
+
+  bot:
+    build: .
+    command: ["bot"]
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+    restart: unless-stopped

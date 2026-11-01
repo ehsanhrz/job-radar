@@ -1,0 +1,4 @@
+python-jobspy==1.4.1
+requests[socks]>=2.31
+PyYAML>=6.0
+python-dotenv>=1.0

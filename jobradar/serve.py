@@ -25,6 +25,26 @@ from .db import DB
 log = logging.getLogger("serve")
 
 LAST_RUN_KEY = "last_run_at"
+FINISHED_KEY = "last_run_finished_at"
+RESUME_AFTER_SEC = 300
+
+
+def run_was_interrupted(db: DB) -> bool:
+    """A run started but never finished (container restarted/redeployed mid-run)."""
+    started, finished = db.get_meta(LAST_RUN_KEY), db.get_meta(FINISHED_KEY)
+    return bool(started) and (not finished or finished < started)
+
+
+def reschedule_interrupted(db: DB, interval_s: float) -> bool:
+    """Call once at boot: if the previous run was killed, run again in ~5 min
+    instead of waiting a full interval."""
+    if not run_was_interrupted(db):
+        return False
+    from datetime import timedelta
+    fake_last = datetime.now(timezone.utc) - timedelta(seconds=interval_s - RESUME_AFTER_SEC)
+    db.set_meta(LAST_RUN_KEY, fake_last.isoformat(timespec="seconds"))
+    db.set_meta(FINISHED_KEY, fake_last.isoformat(timespec="seconds"))
+    return True
 
 
 def _seconds_until_next(db: DB, interval_s: float, jitter_s: float) -> float:
@@ -40,6 +60,8 @@ def _scheduler(settings: Settings) -> None:
     interval_s = float(sched.get("interval_hours", 6)) * 3600
     jitter_s = float(sched.get("jitter_minutes", 30)) * 60
     db = DB(settings.db_path)
+    if reschedule_interrupted(db, interval_s):
+        log.info("previous run was interrupted (restart/redeploy): running again in ~5 min")
     jitter = random.uniform(-jitter_s, jitter_s)
     announced = None
     while True:

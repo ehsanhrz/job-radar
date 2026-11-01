@@ -144,6 +144,9 @@ def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = 
         "sources": {k: f"{h.found} jobs / {h.calls} calls / {h.errors} err" for k, h in result.health.items()},
     }
     log.info("run summary: %s", summary)
+    if not dry_run:
+        from .db import now
+        db.set_meta("last_run_finished_at", now())  # absent/older = the run was killed
 
     if tg and (cfg.get("telegram") or {}).get("send_run_summary", True):
         src = "\n".join(f"• {k}: {v}" for k, v in summary["sources"].items()) or "• (no sources ran)"

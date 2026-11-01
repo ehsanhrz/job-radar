@@ -35,14 +35,33 @@ class Blocked(RuntimeError):
     pass
 
 
-def _get(session: requests.Session, url: str) -> str:
-    r = session.get(url, headers=HEADERS, timeout=30)
+def make_session(bcfg: dict | None = None):
+    """Plain requests, or curl_cffi impersonating a real browser's TLS fingerprint when
+    the board blocks Python clients (Kariyer.net: 403 for requests, 200 for Chrome)."""
+    imp = (bcfg or {}).get("impersonate")
+    if imp:
+        try:
+            from curl_cffi import requests as cffi  # installed with python-jobspy
+            return cffi.Session(impersonate=imp)
+        except Exception as e:  # noqa: BLE001
+            log.warning("curl_cffi unavailable (%s): using plain requests", e)
+    return requests.Session()
+
+
+def _get(session, url: str) -> str:
+    impersonating = type(session).__module__.startswith("curl_cffi")
+    # an impersonating session must keep the browser's own headers (UA must match the fingerprint)
+    headers = {"Accept-Language": HEADERS["Accept-Language"]} if impersonating else HEADERS
+    r = session.get(url, headers=headers, timeout=30)
     if r.status_code in BLOCK_STATUSES:
         raise Blocked(f"HTTP {r.status_code} (blocked)")
     r.raise_for_status()
-    enc = getattr(r, "encoding", "utf-8")
-    if not enc or enc.lower() in ("iso-8859-1", "latin-1", "ascii"):
-        r.encoding = "utf-8"  # undeclared charset -> requests guesses latin-1 and mangles Turkish
+    content = getattr(r, "content", None)
+    if isinstance(content, (bytes, bytearray)):
+        try:
+            return content.decode("utf-8")  # both boards are UTF-8; avoids latin-1 guesses
+        except UnicodeDecodeError:
+            pass
     return r.text
 
 
@@ -256,18 +275,18 @@ def collect(cfg: dict, want_details: Callable[[Job], bool] | None = None,
             session: requests.Session | None = None, sleep_fn=time.sleep) -> CollectResult:
     result = CollectResult()
     sources = cfg.get("extra_sources") or {}
-    session = session or requests.Session()
     for board, spec in BOARDS.items():
         bcfg = sources.get(board) or {}
         if not bcfg.get("enabled", False):
             continue
+        sess = session or make_session(bcfg)
         jobs: list[Job] = []
         blocked = False
         for i, url in enumerate(bcfg.get("list_urls") or []):
             if i:
                 sleep_fn(random.uniform(2, 5))
             try:
-                found = spec["parse_list"](_get(session, url))
+                found = spec["parse_list"](_get(sess, url))
             except Blocked as e:
                 result.call(board, error=f"{url}: {e}")
                 log.warning("%s blocked on %s: skipping it for this run", board, url)
@@ -293,7 +312,7 @@ def collect(cfg: dict, want_details: Callable[[Job], bool] | None = None,
             if k:
                 sleep_fn(random.uniform(lo, hi))
             try:
-                d = _fetch_detail(session, board, job)
+                d = _fetch_detail(sess, board, job)
             except Blocked as e:
                 result.call(board, error=f"job pages: {e}")
                 break

@@ -2,3 +2,4 @@ python-jobspy==1.4.1
 requests[socks]>=2.31
 PyYAML>=6.0
 python-dotenv>=1.0
+curl_cffi>=0.7   # browser TLS impersonation (Kariyer.net); also a JobSpy dependency

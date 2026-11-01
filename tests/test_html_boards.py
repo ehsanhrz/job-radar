@@ -168,3 +168,55 @@ def test_undeclared_charset_decoded_as_utf8():
         def get(self, *a, **k):
             return R()
     assert hb._get(S(), "u") == "Kıdemli Yazılım Geliştirici"
+
+
+# ---------------- browser impersonation (Kariyer.net 403s plain requests) ----------------
+def test_make_session_uses_curl_cffi_when_configured(monkeypatch):
+    import sys
+    import types
+    made = {}
+
+    class FakeCffiSession:
+        def __init__(self, impersonate=None):
+            made["impersonate"] = impersonate
+    FakeCffiSession.__module__ = "curl_cffi.requests.session"
+    fake_pkg = types.ModuleType("curl_cffi")
+    fake_req = types.ModuleType("curl_cffi.requests")
+    fake_req.Session = FakeCffiSession
+    fake_pkg.requests = fake_req
+    monkeypatch.setitem(sys.modules, "curl_cffi", fake_pkg)
+    monkeypatch.setitem(sys.modules, "curl_cffi.requests", fake_req)
+    s = hb.make_session({"impersonate": "chrome"})
+    assert isinstance(s, FakeCffiSession) and made["impersonate"] == "chrome"
+    assert type(hb.make_session({})).__module__.startswith("requests")
+
+
+def test_make_session_falls_back_without_curl_cffi(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "curl_cffi", None)  # import fails
+    assert type(hb.make_session({"impersonate": "chrome"})).__module__.startswith("requests")
+
+
+def test_impersonating_session_keeps_browser_user_agent():
+    seen = {}
+
+    class Resp:
+        status_code = 200
+        content = b"ok"
+
+        def raise_for_status(self):
+            pass
+
+    class CffiLike:
+        def get(self, url, headers=None, timeout=None):
+            seen.update(headers)
+            return Resp()
+    CffiLike.__module__ = "curl_cffi.requests.session"
+    assert hb._get(CffiLike(), "u") == "ok"
+    assert "User-Agent" not in seen and "Accept-Language" in seen
+
+
+def test_config_impersonates_for_kariyer_only():
+    src = CFG["extra_sources"]
+    assert src["kariyer"]["impersonate"] == "chrome"
+    assert not src["jaabz"].get("impersonate")

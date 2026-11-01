@@ -590,3 +590,26 @@ def test_vetoed_command_lists_reasons(db, ev, tmp_path):
     tg = FakeTG()
     handle_update(db, tg, _settings(tmp_path), {"message": {"chat": {"id": 42}, "text": "/vetoed"}})
     assert "Must be based in the UK" in tg.sent[-1][0]
+
+
+# ---------------- Turkish postings ----------------
+def test_turkish_junior_titles_dropped(ev):
+    assert ev.evaluate(job("Yazılım Uzman Yardımcısı", "C# .NET")).status == "filtered"
+    assert ev.evaluate(job("Yeni Mezun .NET Geliştirici", "C#")).status == "filtered"
+    assert ev.evaluate(job("Kıdemli .NET Yazılım Geliştirici", "C#")).status != "filtered"
+
+
+def test_turkish_onsite_and_hybrid_penalised(ev):
+    base = ev.evaluate(job("Senior .NET Developer", "C# ile deneyimli"))
+    onsite = ev.evaluate(job("Senior .NET Developer", "C# ile deneyimli. Ofisten çalışma zorunludur."))
+    hybrid = ev.evaluate(job("Senior .NET Developer", "C# ile deneyimli. Hibrit çalışma modeli."))
+    assert base.score - onsite.score == 15 and base.score - hybrid.score == 10
+
+
+def test_turkish_evidence_veto_works_when_quoted_verbatim():
+    from jobradar.ai import Review, apply_review
+    text = "Kıdemli .NET geliştirici arıyoruz. Ofisten çalışma zorunludur, Zeytinburnu."
+    verbatim = Review(8, "no", "on-site", evidence="Ofisten çalışma zorunludur")
+    translated = Review(8, "no", "on-site", evidence="Working from the office is mandatory")
+    assert apply_review(70, verbatim, CFG, text)[1] == "ai: not feasible from Iran"
+    assert apply_review(70, translated, CFG, text)[1] is None

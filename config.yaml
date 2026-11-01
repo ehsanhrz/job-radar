@@ -100,6 +100,7 @@ filters:
 
   title_exclude:
     - '\b(intern|internship|stajyer|trainee|graduate)\b'
+    - 'yard[ıi]mc[ıi]|yeni mezun|\bstaj'      # Turkish: assistant / new graduate / internship
     - '\b(junior|jr)\b'
     - '\b(director|head of|vp|manager)\b'
     - '\b(ios|android|flutter|mobile)\b'
@@ -178,6 +179,9 @@ scoring:
     'fluent (in )?arabic|arabic (speaker|speaking)': -15
     '\b(on-?site|in-?office|office-based)\b': -15   # you can't relocate right now
     '\bhybrid\b': -10
+    # Turkish on-site / hybrid wording
+    'ofisten [çc]al[ıi][şs]|ofiste [çc]al[ıi][şs]|y[üu]z y[üu]ze [çc]al[ıi][şs]|i[şs]yerinde': -15
+    '\bhibrit\b': -10
 
   remote_bonus: 10      # is_remote flag or "remote"/"uzaktan" in text
   not_remote_penalty: -15   # no remote flag and the word "remote" appears nowhere

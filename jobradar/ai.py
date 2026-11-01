@@ -35,8 +35,8 @@ Return ONLY a JSON object, no markdown, with exactly these keys:
                                   // could the candidate (living in Iran, remote only) be hired,
                                   // judging ONLY by what this posting says?
   "evidence": string,             // if feasible is "no": copy the EXACT sentence from the posting
-                                  // that rules him out (e.g. "Must be based in the US").
-                                  // Otherwise "".
+                                  // that rules him out, character for character, in the posting's
+                                  // ORIGINAL language (never translate it). Otherwise "".
   "reason": string,               // max 15 words, why this fit score
   "flags": [string]               // max 3 short red flags (missing skills, language, location...), may be empty
 }

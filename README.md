@@ -109,7 +109,24 @@ Tips:
 - Add a country: copy a block in `targets`. Indeed needs `country_indeed`
   (e.g. `qatar`, `saudi arabia`, `romania`); LinkedIn/Bayt just use `location`.
 
-## 6. When a source gets blocked
+## 6. AI second opinion (optional)
+
+Jobs that pass the keyword filter (plus borderline ones near `min_score`) get reviewed
+by an LLM, which knows your profile from `AI_PROFILE`. It returns:
+
+- **fit 0–10** → final score = keyword score + (fit − 5) × `ai.weight`
+- **feasible from Iran?** yes / no / unclear. A "no" vetoes the job (hidden location rules, on-site...).
+- **red flags**, e.g. "needs AWS" or "German C1"
+
+The card then shows `🤖 8/10 · fintech .NET match · ✅ Iran-remote yes`.
+
+**Fault tolerant by design.** No key, 401/403 (bad or banned key), 429, 5xx, timeouts,
+broken JSON, or even a bug in the AI code: the job keeps its keyword score and is
+sent normally. An auth error, or 3 failures in a row, switches the AI off for the rest
+of that run, and the run summary tells you why. Any OpenAI-compatible provider works;
+see `.env.example`.
+
+## 7. When a source gets blocked
 
 The watchdog sends `⚠️ linkedin returned 0 jobs in the last 3 runs` and
 `✅ linkedin is back` when it recovers. LinkedIn and Indeed dislike datacenter and
@@ -130,7 +147,7 @@ pytest -q
 
 - [x] **Phase 1**: JobSpy (LinkedIn, Indeed, Bayt) + Arbeitnow → filters/scoring → Telegram, watchdog
 - [ ] **Phase 2**: Kariyer.net scraper (Turkish market), more Gulf boards
-- [ ] **Phase 3**: optional LLM pass ("realistic from Iran?", salary/remote extraction)
+- [x] **Phase 3**: optional LLM pass (fit, feasible-from-Iran veto, red flags) with keyword fallback
 - [ ] **Phase 4**: weekly stats, quick tailored cover-letter drafts per job
 
 ## Disclaimer

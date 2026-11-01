@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 
+from .ai import AIReviewer, apply_review
 from .collectors import CollectResult, collect_all
 from .config import Settings
 from .db import DB
@@ -60,6 +61,35 @@ def watchdog(db: DB, result: CollectResult, cfg: dict, tg: Telegram | None) -> l
     return messages
 
 
+def ai_review_step(db: DB, reviewer: AIReviewer, cfg: dict) -> dict[str, int]:
+    """Second opinion on jobs that passed the keyword filter. Never raises."""
+    out = {"reviewed": 0, "vetoed": 0, "promoted": 0}
+    if not reviewer.enabled:
+        why = reviewer.why_disabled()
+        if why and why != "not configured":
+            log.info("AI review off: %s", why)
+        return out
+    acfg = cfg.get("ai") or {}
+    min_score = int((cfg.get("scoring") or {}).get("min_score", 30))
+    margin = int(acfg.get("review_margin", 10))
+    for row in db.ai_candidates(min_score - margin, int(acfg.get("max_reviews_per_run", 30))):
+        if not reviewer.enabled:  # circuit breaker tripped mid-run
+            break
+        try:
+            review = reviewer.review(dict(row))
+            if review is None:
+                continue  # keeps its keyword score; may be retried next run if still unsent
+            final, veto = apply_review(row["score"], review, cfg)
+            status = "filtered" if veto else ("queued" if final >= min_score else "low")
+            db.save_ai(row["id"], row["score"], final, review.to_json(), status, veto)
+            out["reviewed"] += 1
+            out["vetoed"] += bool(veto)
+            out["promoted"] += row["status"] == "low" and status == "queued"
+        except Exception:  # noqa: BLE001 - belt and braces: AI must never break a run
+            log.exception("AI step error on %s; keeping keyword score", row["id"])
+    return out
+
+
 def send_queued(db: DB, tg: Telegram | None, cfg: dict, dry_run: bool) -> int:
     tcfg = cfg.get("telegram") or {}
     rows = db.queued(int(tcfg.get("max_per_run", 20)))
@@ -98,6 +128,8 @@ def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = 
     result = collect_all(cfg, settings.scrape_proxies)
     record_health(db, result)
     counts = ingest(db, Evaluator(cfg), result)
+    reviewer = AIReviewer(cfg)
+    ai = ai_review_step(db, reviewer, cfg)
     sent = send_queued(db, tg, cfg, dry_run)
     alerts = watchdog(db, result, cfg, tg)
 
@@ -106,6 +138,7 @@ def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = 
         "sent": sent,
         "still_queued": len(db.queued(10_000)),
         "minutes": round((time.time() - started) / 60, 1),
+        "ai": {**ai, **reviewer.stats, "off": reviewer.why_disabled()},
         "sources": {k: f"{h.found} jobs / {h.calls} calls / {h.errors} err" for k, h in result.health.items()},
     }
     log.info("run summary: %s", summary)
@@ -116,9 +149,21 @@ def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = 
             tg.send(
                 f"🛰 <b>Run done</b> in {summary['minutes']} min\n"
                 f"new {counts['new']} · sent {sent} · low-score {counts['low']} · "
-                f"filtered {counts['filtered']} · dupes {counts['duplicate']}\n{src}"
+                f"filtered {counts['filtered']} · dupes {counts['duplicate']}\n"
+                f"{_ai_summary(summary['ai'])}{src}"
             )
         except TelegramError as e:
             log.error("summary failed: %s", e)
     summary["alerts"] = len(alerts)
     return summary
+
+
+def _ai_summary(ai: dict) -> str:
+    off = ai.get("off")
+    if off == "not configured":
+        return ""  # AI not set up: say nothing
+    line = (f"🤖 AI reviewed {ai['reviewed']} · vetoed {ai['vetoed']} · promoted {ai['promoted']}"
+            f" · failed {ai['failed']}")
+    if off:
+        line += f" · ⚠️ {off}, used keyword scores"
+    return line + "\n"

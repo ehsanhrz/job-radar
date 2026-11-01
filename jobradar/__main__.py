@@ -66,6 +66,7 @@ def cmd_stats(args, settings) -> None:
 def cmd_rescore(args, settings) -> None:
     """Re-apply filters/scoring to unsent jobs after you tweak config.yaml."""
     from .db import DB
+    from .ai import Review, apply_review
     from .filters import Evaluator
     from .models import Job
     from datetime import date
@@ -80,8 +81,14 @@ def cmd_rescore(args, settings) -> None:
                   date_posted=date.fromisoformat(row["date_posted"]) if row["date_posted"] else None,
                   target=row["target"])
         v = ev.evaluate(job)
-        if v.status != row["status"] or v.score != row["score"]:
-            db.update_evaluation(row["id"], v.status, v.score, v.reasons, v.filter_reason)
+        status, score, reason = v.status, v.score, v.filter_reason
+        review = Review.from_json(row["ai_review"])
+        if review and v.status != "filtered":  # keep the AI's opinion on top of new keyword rules
+            score, veto = apply_review(v.score, review, settings.raw)
+            status = "filtered" if veto else ("queued" if score >= ev.min_score else "low")
+            reason = veto
+        if status != row["status"] or score != row["score"]:
+            db.update_evaluation(row["id"], status, score, v.reasons, reason)
             changed += 1
     print(f"rescored: {changed} jobs changed. queued now: {len(db.queued(100_000))}")
 

@@ -18,6 +18,8 @@ scrape:
 search_terms:
   - '".NET" OR "C#"'
   - '"backend developer" OR "backend engineer"'
+  - '"fintech" backend'
+  - '"integration engineer" OR "solutions engineer"'
 
 # Where to look. sites: linkedin | indeed | bayt | glassdoor
 # location         -> used by LinkedIn / Bayt
@@ -29,12 +31,15 @@ targets:
     country_indeed: turkey
     extra_search_terms:
       - 'C# yazılım geliştirici'
+      - 'fintech yazılım'
       - 'NestJS'
 
   - name: UAE
     sites: [linkedin, indeed, bayt]
     location: 'United Arab Emirates'
     country_indeed: uae
+    extra_search_terms:
+      - 'fintech .NET'
 
   - name: Iraq
     sites: [linkedin, bayt]
@@ -78,6 +83,7 @@ filters:
     - '\.net|dotnet|c#|csharp|asp\.?net'
     - 'back.?end|nest\.?js|node\.?js|full.?stack'
     - 'software (engineer|developer)|yaz[ıi]l[ıi]m|geli[şs]tirici'
+    - '(integration|solutions?|implementation) (engineer|developer|specialist|architect)|technical solutions'
 
   title_exclude:
     - '\b(intern|internship|stajyer|trainee|graduate)\b'
@@ -113,17 +119,34 @@ scoring:
     'nest\.?js': 15
     '\b(senior|sr)\b|k[ıi]demli': 10
     'back.?end': 10
+    '(integration|solutions?) (engineer|specialist|architect)|technical solutions': 10
+    'fintech|payments?|trading|wallet|exchange': 5
 
   text_keywords:
     '\.net|c#': 10
     '\.net core|\.net ([5-9]|1[0-9])|asp\.net core': 10
     'entity framework|ef core': 5
     'sql server|mssql|t-sql': 5
+    'postgres': 5
     'mongo': 5
     'microservice': 5
     'docker|kubernetes|k8s': 5
     'rabbitmq|kafka|redis': 5
     'integration': 3
+    # your domain (CV): fintech / trading / wallets / KYC. Kept moderate on purpose:
+    # fintech & crypto employers are the strictest on sanctions screening.
+    '\bfintech\b|financial technology|payment (gateway|provider|processing)': 15
+    'trading (system|platform|engine)|exchange|brokerage|order (book|matching)': 15
+    '\bwallets?\b|\bkyc\b|\baml\b|identity verification|onboarding provider': 15
+    # architecture you list on the CV
+    '\bddd\b|domain.driven': 8
+    '\bcqrs\b|event sourcing': 8
+    'clean architecture|hexagonal|onion architecture': 8
+    'event.driven|distributed systems?': 8
+    'mediatr': 5
+    'opentelemetry|prometheus|grafana|observability': 5
+    'traefik|pgbouncer|docker swarm': 3
+    'testcontainers|integration tests?': 3
     'nest\.?js|typescript': 5
     'legacy|moderni[sz]': 5
     'worldwide|anywhere in the world|work from anywhere|any (country|location)|fully remote': 15
@@ -142,6 +165,21 @@ scoring:
   fresh_bonus: 5        # posted in the last 2 days
   target_bonus:
     Turkey: 10
+
+# ── Optional AI second opinion (needs AI_BASE_URL / AI_API_KEY / AI_MODEL in env) ──
+# Only reviews jobs that passed the keyword filter. ANY AI error -> keyword score is used.
+ai:
+  enabled: true
+  weight: 5                    # final = keyword_score + (fit - 5) * weight   (fit 0-10)
+  veto_infeasible: true        # AI says "not possible from Iran" -> dropped
+  veto_fit_at_or_below: 2      # AI fit 0-2 -> dropped
+  review_margin: 10            # also review 'low' jobs within N points of min_score (may promote)
+  max_reviews_per_run: 30
+  min_seconds_between_calls: 10   # free tiers have tokens-per-minute limits
+  description_chars: 4000
+  max_tokens: 600
+  timeout_sec: 45
+  max_consecutive_failures: 3  # then AI is switched off for the rest of the run
 
 telegram:
   max_per_run: 20         # the rest stay queued for the next run

@@ -63,7 +63,15 @@ class DB:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after v0.1 to existing databases."""
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(jobs)")}
+        for name, ddl in (("keyword_score", "INTEGER"), ("ai_review", "TEXT"), ("ai_status", "TEXT")):
+            if name not in cols:
+                self.conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {ddl}")
 
     # ---------- jobs ----------
     def seen(self, job: Job) -> bool:
@@ -125,6 +133,24 @@ class DB:
         self.conn.execute(
             "UPDATE jobs SET status=?, score=?, reasons=?, filter_reason=?, updated_at=? WHERE id=?",
             (status, score, json.dumps(reasons), filter_reason, now(), job_id),
+        )
+        self.conn.commit()
+
+    def ai_candidates(self, min_low_score: int, limit: int) -> list[sqlite3.Row]:
+        """Unreviewed queued jobs + borderline 'low' ones the AI might promote."""
+        return self.conn.execute(
+            """SELECT * FROM jobs WHERE ai_status IS NULL
+               AND (status = 'queued' OR (status = 'low' AND score >= ?))
+               ORDER BY score DESC LIMIT ?""",
+            (min_low_score, limit),
+        ).fetchall()
+
+    def save_ai(self, job_id: str, keyword_score: int, final_score: int, review_json: str,
+                status: str, filter_reason: str | None) -> None:
+        self.conn.execute(
+            """UPDATE jobs SET keyword_score=?, score=?, ai_review=?, ai_status='ok',
+               status=?, filter_reason=?, updated_at=? WHERE id=?""",
+            (keyword_score, final_score, review_json, status, filter_reason, now(), job_id),
         )
         self.conn.commit()
 

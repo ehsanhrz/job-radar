@@ -105,6 +105,8 @@ class AIReviewer:
         self.max_failures = int(self.cfg.get("max_consecutive_failures", 3))
         self.min_gap = float(self.cfg.get("min_seconds_between_calls", 10))
         self.desc_chars = int(self.cfg.get("description_chars", 4000))
+        self.extra_params = dict(self.cfg.get("extra_params") or {})
+        self.extras_rejected = False
         self.failures = 0
         self.tripped = False
         self.trip_reason = ""
@@ -149,6 +151,32 @@ class AIReviewer:
             self.trip_reason = f"{self.failures} failures in a row (last: {why})"
             log.warning("AI reviewer switched off for this run -> keyword scores only")
 
+    def _payload(self, job: dict, with_extras: bool) -> dict:
+        body = {"model": self.model, "messages": self._messages(job), "temperature": 0,
+                "max_tokens": int(self.cfg.get("max_tokens", 1500))}
+        if with_extras:
+            body.update(self.extra_params)
+        return body
+
+    def _post(self, job: dict):
+        """POST once; if the provider rejects our provider-specific extras (HTTP 400),
+        retry once without them and stop sending them for the rest of the run."""
+        for attempt in range(2):
+            use_extras = bool(self.extra_params) and not self.extras_rejected
+            try:
+                r = self.s.post(f"{self.base_url}/chat/completions",
+                                headers={"Authorization": f"Bearer {self.api_key}"},
+                                json=self._payload(job, use_extras), timeout=self.timeout)
+            except Exception as e:  # noqa: BLE001 - timeouts, DNS, TLS, proxy...
+                self._fail(f"{type(e).__name__}")
+                return None
+            if r.status_code == 400 and use_extras and attempt == 0:
+                self.extras_rejected = True
+                log.warning("AI provider rejected ai.extra_params (HTTP 400): retrying without them")
+                continue
+            return r
+        return r
+
     def review(self, job: dict) -> Review | None:
         """Never raises. None = use keyword score only."""
         if not self.enabled:
@@ -159,18 +187,9 @@ class AIReviewer:
             self.sleep(wait)
         self._last_call = time.monotonic()
 
-        try:
-            r = self.s.post(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={"model": self.model, "messages": self._messages(job),
-                      "temperature": 0, "max_tokens": int(self.cfg.get("max_tokens", 600))},
-                timeout=self.timeout,
-            )
-        except Exception as e:  # noqa: BLE001 - timeouts, DNS, TLS, proxy...
-            self._fail(f"{type(e).__name__}")
+        r = self._post(job)
+        if r is None:
             return None
-
         if r.status_code in (401, 403):
             # bad/banned key or region block: retrying won't help this run
             self.tripped = True
@@ -188,13 +207,19 @@ class AIReviewer:
             return None
 
         try:
-            content = r.json()["choices"][0]["message"]["content"]
+            choice = r.json()["choices"][0]
+            content = choice["message"].get("content") or ""
+            finish = choice.get("finish_reason")
         except Exception:  # noqa: BLE001
             self._fail("unexpected response shape")
             return None
-        review = parse_review(content or "")
+        review = parse_review(content)
         if review is None:
-            self._fail("model did not return valid JSON")
+            # reasoning models can spend the whole token budget "thinking" -> empty content
+            hint = " (ran out of tokens: raise ai.max_tokens or lower reasoning_effort)" \
+                if finish == "length" else ""
+            snippet = re.sub(r"\s+", " ", content)[:150] or "<empty>"
+            self._fail(f"model did not return valid JSON{hint}; finish={finish}; got: {snippet}")
             return None
         self.failures = 0
         self.stats["ok"] += 1

@@ -116,6 +116,7 @@ def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = 
     if not dry_run:
         from .db import now
         db.set_meta("last_run_at", now())  # serve mode schedules from this
+        db.set_meta("next_run_at", None)    # a one-off resume slot is consumed by any run
     tg = None if dry_run else Telegram(settings.telegram_token, settings.telegram_chat_id,
                                        settings.telegram_proxy)
 

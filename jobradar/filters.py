@@ -43,11 +43,14 @@ class Evaluator:
         self.hard_exclude = _compile(f.get("hard_exclude"))
         self.location_exclude = _compile(f.get("location_exclude"))
         self.max_age_days = f.get("max_age_days")
+        # sites whose remote flag is reliable: is_remote == False -> drop
+        self.require_remote_sites = set(f.get("require_remote_sites") or [])
 
         self.title_kw = _compile_weights(s.get("title_keywords"))
         self.text_kw = _compile_weights(s.get("text_keywords"))
         self.penalties = _compile_weights(s.get("penalties"))
         self.remote_bonus = int(s.get("remote_bonus", 0))
+        self.not_remote_penalty = int(s.get("not_remote_penalty", 0))
         self.turkish_bonus = int(s.get("turkish_bonus", 0))
         self.fresh_bonus = int(s.get("fresh_bonus", 0))
         self.target_bonus = {k: int(v) for k, v in (s.get("target_bonus") or {}).items()}
@@ -78,6 +81,8 @@ class Evaluator:
             m = p.search(text)
             if m:
                 return Verdict("filtered", 0, [], f"hard_exclude: {m.group(0)[:60]}")
+        if job.site in self.require_remote_sites and job.is_remote is False:
+            return Verdict("filtered", 0, [], f"not remote ({job.site})")
         if self.max_age_days and job.date_posted:
             if (today - job.date_posted).days > int(self.max_age_days):
                 return Verdict("filtered", 0, [], "too old")
@@ -98,6 +103,9 @@ class Evaluator:
             if self.remote_bonus:
                 score += self.remote_bonus
                 reasons.append(f"remote {self.remote_bonus:+d}")
+        elif self.not_remote_penalty:
+            score += self.not_remote_penalty
+            reasons.append(f"no sign of remote {self.not_remote_penalty:+d}")
         if self.turkish_bonus and looks_turkish(text):
             score += self.turkish_bonus
             reasons.append(f"turkish {self.turkish_bonus:+d}")

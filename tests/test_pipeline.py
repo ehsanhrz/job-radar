@@ -613,3 +613,36 @@ def test_turkish_evidence_veto_works_when_quoted_verbatim():
     translated = Review(8, "no", "on-site", evidence="Working from the office is mandatory")
     assert apply_review(70, verbatim, CFG, text)[1] == "ai: not feasible from Iran"
     assert apply_review(70, translated, CFG, text)[1] is None
+
+
+# ---------------- Indeed: direct-apply only ----------------
+def test_indeed_kept_only_with_company_link(ev):
+    direct = jobspy_collector.row_to_job({"site": "indeed", "title": "Senior .NET Developer",
+        "job_url": "https://tr.indeed.com/viewjob?jk=abc",
+        "job_url_direct": "https://careers.acme.com/jobs/123", "description": "C# remote",
+        "date_posted": TODAY}, "Turkey")
+    indeed_only = jobspy_collector.row_to_job({"site": "indeed", "title": "Senior .NET Developer",
+        "job_url": "https://tr.indeed.com/viewjob?jk=def", "job_url_direct": None,
+        "description": "C# remote", "date_posted": TODAY}, "Turkey")
+    assert direct.url == "https://careers.acme.com/jobs/123"
+    assert ev.evaluate(direct).status != "filtered"
+    assert ev.evaluate(indeed_only).filter_reason == "apply only via indeed"
+    # other boards keep their own link
+    li = jobspy_collector.row_to_job({"site": "linkedin", "title": "x",
+        "job_url": "https://www.linkedin.com/jobs/view/1", "job_url_direct": "https://ats/1"}, "T")
+    assert li.url == "https://www.linkedin.com/jobs/view/1"
+
+
+def test_old_indeed_rows_cleaned_once(tmp_path):
+    import sqlite3
+    db = DB(tmp_path / "x.db")
+    db.conn.execute("DELETE FROM meta WHERE key='cleanup_indeed_v1'")
+    for jid, url, st in (("a", "https://tr.indeed.com/viewjob?jk=1", "queued"),
+                         ("b", "https://tr.indeed.com/viewjob?jk=2", "applied"),
+                         ("c", "https://careers.x.com/1", "queued")):
+        db.conn.execute("INSERT INTO jobs (id, fingerprint, source, site, title, url, status, first_seen)"
+                        " VALUES (?, ?, 'jobspy', 'indeed', 't', ?, ?, 'now')", (jid, jid, url, st))
+    db.conn.commit()
+    db2 = DB(tmp_path / "x.db")
+    left = {r["id"] for r in db2.conn.execute("SELECT id FROM jobs")}
+    assert left == {"b", "c"}  # unsent indeed.com row gone; applied + direct-link kept

@@ -91,6 +91,10 @@ filters:
   # remote == false means on-site/hybrid -> dropped.
   require_remote_sites: [arbeitnow, himalayas, jobicy, remotive]
 
+  # Applying on Indeed needs a phone verification you can't pass: keep only Indeed
+  # postings that link to the company's own career site (the card opens that link).
+  direct_apply_only_sites: [indeed]
+
   # title must match at least one of these
   title_include:
     - '\.net|dotnet|c#|csharp|asp\.?net'

@@ -73,6 +73,14 @@ class DB:
         for name, ddl in (("keyword_score", "INTEGER"), ("ai_review", "TEXT"), ("ai_status", "TEXT")):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {ddl}")
+        # v0.4: Indeed jobs used to be stored with their indeed.com link. Forget the unsent
+        # ones so they can come back with the company's direct link (dedupe would block them).
+        self.conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        done = self.conn.execute("SELECT 1 FROM meta WHERE key='cleanup_indeed_v1'").fetchone()
+        if not done:
+            self.conn.execute("""DELETE FROM jobs WHERE site='indeed' AND url LIKE '%indeed.com%'
+                                 AND status IN ('queued', 'low', 'filtered')""")
+            self.conn.execute("INSERT INTO meta (key, value) VALUES ('cleanup_indeed_v1', '1')")
 
     # ---------- jobs ----------
     def seen(self, job: Job) -> bool:

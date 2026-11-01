@@ -103,11 +103,11 @@ def test_report_command_sends_file(tmp_path):
     tg = FakeTG()
     s = Settings(raw=CFG, telegram_token="t", telegram_chat_id="42", telegram_proxy=None,
                  scrape_proxies=[], db_path=tmp_path / "r.db")
-    handle_update(db, tg, s, {"message": {"chat": {"id": 42}, "text": "/report 7d"}})
+    handle_update(db, tg, s, {"message": {"from": {"id": 42}, "chat": {"id": 42}, "text": "/report 7d"}})
     name, data, cap = tg.docs[-1]
     assert name.startswith("jobradar-report-7d-") and name.endswith(".json")
     assert json.loads(data)["report"]["period"] == "7d" and "issues:" in cap
-    handle_update(db, tg, s, {"message": {"chat": {"id": 42}, "text": "/report lol"}})
+    handle_update(db, tg, s, {"message": {"from": {"id": 42}, "chat": {"id": 42}, "text": "/report lol"}})
     assert "bad period" in tg.sent[-1]
 
 
@@ -149,3 +149,50 @@ def test_telegram_send_document_multipart():
     assert tg.send_document("r.json", b"{}", "cap") == 9
     assert tg.s.url.endswith("/sendDocument") and tg.s.data["chat_id"] == "42"
     assert tg.s.files["document"][0] == "r.json"
+
+
+# ---------------- only the owner, only the owner's chat ----------------
+def _s(tmp_path, chat="42", users=frozenset()):
+    return Settings(raw=CFG, telegram_token="t", telegram_chat_id=chat, telegram_proxy=None,
+                    scrape_proxies=[], db_path=tmp_path / "r.db", allowed_user_ids=users)
+
+
+@pytest.mark.parametrize("upd", [
+    {"message": {"from": {"id": 666}, "chat": {"id": 666}, "text": "/report all"}},     # stranger, own chat
+    {"message": {"from": {"id": 666}, "chat": {"id": 42}, "text": "/report all"}},      # stranger, spoofed chat
+    {"message": {"chat": {"id": 42}, "text": "/report all"}},                           # no sender
+    {"edited_message": {"from": {"id": 42}, "chat": {"id": 42}, "text": "/report all"}},
+    {"channel_post": {"chat": {"id": 42}, "text": "/report all"}},
+    {"callback_query": {"from": {"id": 666}, "id": "c", "data": "st:applied:x",
+                        "message": {"chat": {"id": 42}, "message_id": 1}}},
+])
+def test_everything_not_from_owner_is_ignored(tmp_path, upd):
+    from jobradar.bot import handle_update
+    tg = FakeTG()
+    tg.answers = []
+    tg.answer_callback = lambda cid, text="": tg.answers.append(text)
+    handle_update(_seed(tmp_path), tg, _s(tmp_path), upd)
+    assert tg.sent == [] and tg.docs == [] and tg.answers == []   # no reply of any kind
+
+
+def test_owner_with_bot_suffix_and_args(tmp_path):
+    from jobradar.bot import handle_update
+    tg = FakeTG()
+    handle_update(_seed(tmp_path), tg, _s(tmp_path),
+                  {"message": {"from": {"id": 42}, "chat": {"id": 42}, "text": "/report@jobScrappe_bot 7d"}})
+    assert tg.docs and json.loads(tg.docs[-1][1])["report"]["period"] == "7d"
+
+
+def test_group_chat_needs_allowed_users(tmp_path):
+    from jobradar.bot import is_authorized
+    upd = {"message": {"from": {"id": 42}, "chat": {"id": -100123, "type": "group"}, "text": "/stats"}}
+    assert not is_authorized(upd, _s(tmp_path, chat="-100123"))                        # nobody by default
+    assert is_authorized(upd, _s(tmp_path, chat="-100123", users=frozenset({"42"})))
+    upd["message"]["from"]["id"] = 7
+    assert not is_authorized(upd, _s(tmp_path, chat="-100123", users=frozenset({"42"})))
+
+
+def test_empty_chat_id_authorizes_nobody(tmp_path):
+    from jobradar.bot import is_authorized
+    upd = {"message": {"from": {"id": 42}, "chat": {"id": 42}, "text": "/stats"}}
+    assert not is_authorized(upd, _s(tmp_path, chat=""))

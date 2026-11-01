@@ -189,7 +189,7 @@ def test_send_queued_and_button_flow(db, ev, tmp_path):
     from jobradar.bot import handle_update
     settings = Settings(raw=CFG, telegram_token="t", telegram_chat_id="42", telegram_proxy=None,
                         scrape_proxies=[], db_path=tmp_path / "t.db")
-    cb = {"callback_query": {"id": "c1", "data": f"st:applied:{job_id}",
+    cb = {"callback_query": {"from": {"id": 42}, "id": "c1", "data": f"st:applied:{job_id}",
                              "message": {"chat": {"id": 42}, "message_id": 1}}}
     handle_update(db, tg, settings, cb)
     assert db.get(job_id)["status"] == "applied"
@@ -399,7 +399,7 @@ def _settings(tmp_path):
 def test_button_for_unknown_job_is_reported(db, tmp_path):
     from jobradar.bot import handle_update
     tg = FakeTG()
-    cb = {"callback_query": {"id": "c", "data": "st:applied:deadbeefdeadbeef",
+    cb = {"callback_query": {"from": {"id": 42}, "id": "c", "data": "st:applied:deadbeefdeadbeef",
                              "message": {"chat": {"id": 42}, "message_id": 1}}}
     handle_update(db, tg, _settings(tmp_path), cb)
     assert "not in the database" in tg.answers[-1]
@@ -414,8 +414,8 @@ def test_applied_shows_up_in_list(db, ev, tmp_path):
     send_queued(db, tg, CFG, dry_run=False)
     jid = r.jobs[0].id
     handle_update(db, tg, _settings(tmp_path), {"callback_query": {
-        "id": "c", "data": f"st:applied:{jid}", "message": {"chat": {"id": 42}, "message_id": 1}}})
-    handle_update(db, tg, _settings(tmp_path), {"message": {"chat": {"id": 42}, "text": "/applied"}})
+        "from": {"id": 42}, "id": "c", "data": f"st:applied:{jid}", "message": {"chat": {"id": 42}, "message_id": 1}}})
+    handle_update(db, tg, _settings(tmp_path), {"message": {"from": {"id": 42}, "chat": {"id": 42}, "text": "/applied"}})
     assert "Senior .NET Developer" in tg.sent[-1][0]
 
 
@@ -426,7 +426,7 @@ def test_run_cooldown_and_force(db, tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "try_start_run", lambda s, background=True, **k: started.append(1) or True)
     tg = FakeTG()
     db.set_meta("last_run_finished_at", now())
-    msg = lambda t: {"message": {"chat": {"id": 42}, "text": t}}
+    msg = lambda t: {"message": {"from": {"id": 42}, "chat": {"id": 42}, "text": t}}
     bot.handle_update(db, tg, _settings(tmp_path), msg("/run"), allow_run=True)
     assert started == [] and "/run force" in tg.sent[-1][0]
     bot.handle_update(db, tg, _settings(tmp_path), msg("/run force"), allow_run=True)
@@ -524,7 +524,7 @@ def test_run_cooldown_ignores_killed_run(db, tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "try_start_run", lambda s, background=True, **k: started.append(1) or True)
     db.set_meta("last_run_at", now())          # started, then killed: no finished marker
     tg = FakeTG()
-    bot.handle_update(db, tg, _settings(tmp_path), {"message": {"chat": {"id": 42}, "text": "/run"}},
+    bot.handle_update(db, tg, _settings(tmp_path), {"message": {"from": {"id": 42}, "chat": {"id": 42}, "text": "/run"}},
                       allow_run=True)
     assert started == [1]
 
@@ -588,7 +588,7 @@ def test_vetoed_command_lists_reasons(db, ev, tmp_path):
     db.save_ai(r.jobs[0].id, 50, 70, _json.dumps({"fit": 9, "feasible": "no", "reason": "UK",
                "flags": [], "evidence": "Must be based in the UK."}), "filtered", "ai: not feasible from Iran")
     tg = FakeTG()
-    handle_update(db, tg, _settings(tmp_path), {"message": {"chat": {"id": 42}, "text": "/vetoed"}})
+    handle_update(db, tg, _settings(tmp_path), {"message": {"from": {"id": 42}, "chat": {"id": 42}, "text": "/vetoed"}})
     assert "Must be based in the UK" in tg.sent[-1][0]
 
 

@@ -73,13 +73,13 @@ def cmd_rescore(args, settings) -> None:
 
 def cmd_probe(args, settings) -> None:
     """Check from THIS machine what each HTML board returns and what we parse."""
-    import requests
     from .collectors import html_boards as hb
-    s = requests.Session()
     srcs = settings.section("extra_sources")
     for board, spec in hb.BOARDS.items():
-        urls = (srcs.get(board) or {}).get("list_urls") or []
-        print(f"\n=== {board} ({len(urls)} list urls)")
+        bcfg = srcs.get(board) or {}
+        s = hb.make_session(bcfg)
+        urls = bcfg.get("list_urls") or []
+        print(f"\n=== {board} ({len(urls)} list urls, client: {type(s).__module__.split('.')[0]})")
         first = None
         for url in urls:
             try:

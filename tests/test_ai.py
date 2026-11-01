@@ -43,10 +43,11 @@ class Session:
     """Returns queued responses (or raises queued exceptions) in order."""
 
     def __init__(self, *responses):
-        self.responses, self.calls = list(responses), 0
+        self.responses, self.calls, self.bodies = list(responses), 0, []
 
     def post(self, url, headers=None, json=None, timeout=None):
         self.calls += 1
+        self.bodies.append(json)
         r = self.responses.pop(0) if self.responses else ok(GOOD)
         if isinstance(r, Exception):
             raise r
@@ -217,3 +218,41 @@ def test_old_database_is_migrated(tmp_path):
     db = DB(path)
     cols = {r["name"] for r in db.conn.execute("PRAGMA table_info(jobs)")}
     assert {"ai_review", "ai_status", "keyword_score"} <= cols
+
+
+
+# ---------- Groq / reasoning-model specifics ----------
+def test_extra_params_are_sent():
+    r = reviewer(ok(GOOD))
+    assert r.review(JOB).fit == 8
+    body = r.s.bodies[0]
+    assert body["reasoning_effort"] == "low" and body["response_format"] == {"type": "json_object"}
+    assert body["max_tokens"] >= 1000
+
+
+def test_provider_rejecting_extras_falls_back_without_them():
+    r = reviewer(Resp(400), ok(GOOD), ok(GOOD))
+    assert r.review(JOB).fit == 8                 # retried in the same call
+    assert "reasoning_effort" in r.s.bodies[0] and "reasoning_effort" not in r.s.bodies[1]
+    r.review(JOB)
+    assert "reasoning_effort" not in r.s.bodies[2]  # not sent again this run
+    assert not r.tripped
+
+
+def test_400_without_extras_is_a_normal_failure():
+    cfg = {**CFG, "ai": {**CFG["ai"], "extra_params": {}}}
+    r = reviewer(Resp(400), cfg=cfg)
+    assert r.review(JOB) is None and r.s.calls == 1
+
+
+def test_out_of_tokens_is_explained(caplog):
+    trunc = Resp(200, {"choices": [{"message": {"content": ""}, "finish_reason": "length"}]})
+    r = reviewer(trunc)
+    with caplog.at_level("WARNING"):
+        assert r.review(JOB) is None
+    assert "ran out of tokens" in caplog.text and "<empty>" in caplog.text
+
+
+def test_null_content_does_not_crash():
+    r = reviewer(Resp(200, {"choices": [{"message": {"content": None, "reasoning": "hmm"}}]}))
+    assert r.review(JOB) is None

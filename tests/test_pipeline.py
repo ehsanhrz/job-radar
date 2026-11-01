@@ -646,3 +646,35 @@ def test_old_indeed_rows_cleaned_once(tmp_path):
     db2 = DB(tmp_path / "x.db")
     left = {r["id"] for r in db2.conn.execute("SELECT id FROM jobs")}
     assert left == {"b", "c"}  # unsent indeed.com row gone; applied + direct-link kept
+
+
+# ---------------- report fixes (2026-11-01 report) ----------------
+def test_kariyer_disabled_bayt_removed_jobicy_terms():
+    assert CFG["extra_sources"]["kariyer"]["enabled"] is False
+    assert all("bayt" not in t.get("sites", []) for t in CFG["targets"])
+    assert "c#" not in CFG["extra_sources"]["remote_boards"]["search_terms"]
+
+
+@pytest.mark.parametrize("text,lang", [
+    ("Wir suchen dich für unser Team. Deine Aufgaben: Entwicklung mit C#. Du hast Erfahrung und Kenntnisse "
+     "in SQL. Wir bieten dir Home Office und freuen uns auf deine Bewerbung bei uns.", "german"),
+    ("Wij zoeken een .NET ontwikkelaar voor ons team. Je hebt ervaring met C# en kennis van SQL. Het is een "
+     "leuke baan bij een groeiend bedrijf, wat wij bieden is een goed salaris voor jou en onze klanten.", "dutch"),
+    ("Nous recherchons un développeur .NET pour notre équipe. Votre poste: développer avec C#. Vous avez une "
+     "expérience et des connaissances en SQL. Au sein de notre société, nous offrons une ambiance pour vous.",
+     "french"),
+    ("We are hiring a senior .NET engineer. You will work with our team on the platform. German is a plus "
+     "but not required. Experience with C# and Postgres is needed for the role.", None),
+])
+def test_foreign_language_detection(text, lang):
+    from jobradar.filters import foreign_language
+    assert foreign_language(text) == lang
+
+
+def test_foreign_language_penalty_applied(ev):
+    de = ("Wir suchen dich für unser Team. Deine Aufgaben: Entwicklung mit C#. Du hast Erfahrung und "
+          "Kenntnisse in SQL. Wir bieten dir Home Office und freuen uns auf deine Bewerbung bei uns.")
+    a = ev.evaluate(job("Senior .NET Developer", de))
+    assert any(r.startswith("written in german") for r in a.reasons)
+    b = ev.evaluate(job("Senior .NET Developer", de + " The working language is English."))
+    assert not any(r.startswith("written in") for r in b.reasons)

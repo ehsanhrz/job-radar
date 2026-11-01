@@ -27,6 +27,28 @@ def looks_turkish(text: str) -> bool:
     return len(TURKISH_MARKERS.findall(text or "")) >= 4
 
 
+# common function words: a posting full of these is written in that language
+FOREIGN_MARKERS = {
+    "german": re.compile(r"\b(und|wir|sie|mit|für|bei|unsere[nmrs]?|ihre?|erfahrung|kenntnisse|"
+                         r"aufgaben|bieten|suchen|deine?|du)\b", re.IGNORECASE),
+    "dutch": re.compile(r"\b(het|een|wij|jij|voor|onze|ervaring|kennis|bij|zijn|naar|wat)\b", re.IGNORECASE),
+    "french": re.compile(r"\b(nous|vous|avec|pour|une|votre|notre|expérience|connaissances|poste|sein)\b",
+                         re.IGNORECASE),
+}
+ENGLISH_OK = re.compile(r"(working|company|team|office) language (is )?english|english.speaking (team|company|"
+                        r"environment)|no (german|dutch|french) (required|needed)", re.IGNORECASE)
+
+
+def foreign_language(text: str, min_hits: int = 8) -> str | None:
+    """'german' / 'dutch' / 'french' when the posting is written in it, else None."""
+    if not text or ENGLISH_OK.search(text):
+        return None
+    hits = {lang: len(rx.findall(text)) for lang, rx in FOREIGN_MARKERS.items()}
+    lang, n = max(hits.items(), key=lambda kv: kv[1])
+    english = len(re.findall(r"\b(the|and|with|you|our|we|for|experience)\b", text, re.IGNORECASE))
+    return lang if n >= min_hits and n > english else None
+
+
 @dataclass
 class Verdict:
     status: str  # filtered | low | queued
@@ -55,6 +77,7 @@ class Evaluator:
         self.remote_bonus = int(s.get("remote_bonus", 0))
         self.not_remote_penalty = int(s.get("not_remote_penalty", 0))
         self.turkish_bonus = int(s.get("turkish_bonus", 0))
+        self.foreign_language_penalty = int(s.get("foreign_language_penalty", 0))
         self.fresh_bonus = int(s.get("fresh_bonus", 0))
         self.target_bonus = {k: int(v) for k, v in (s.get("target_bonus") or {}).items()}
         self.min_score = int(s.get("min_score", 30))
@@ -116,6 +139,11 @@ class Evaluator:
         if self.turkish_bonus and looks_turkish(text):
             score += self.turkish_bonus
             reasons.append(f"turkish {self.turkish_bonus:+d}")
+        if self.foreign_language_penalty:
+            lang = foreign_language(text)
+            if lang:
+                score += self.foreign_language_penalty
+                reasons.append(f"written in {lang} {self.foreign_language_penalty:+d}")
         if self.fresh_bonus and job.date_posted and (today - job.date_posted).days <= 2:
             score += self.fresh_bonus
             reasons.append(f"fresh {self.fresh_bonus:+d}")

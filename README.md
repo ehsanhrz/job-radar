@@ -1,6 +1,6 @@
 # 🛰 Job Radar
 
-Scrapes LinkedIn, Indeed, Bayt, Arbeitnow and the remote boards Himalayas, Jobicy and Remotive for backend / .NET roles that are
+Scrapes LinkedIn, Indeed (direct-apply only), Jaabz, Arbeitnow, the remote boards Himalayas, Jobicy and Remotive, plus the free feeds Hacker News "Who is hiring", RemoteOK and We Work Remotely for backend / .NET roles that are
 **realistic to get while living in Iran**, scores them, and sends the good ones to
 your Telegram with **✅ Applied / ⏭ Skip / ⭐ Save** buttons.
 

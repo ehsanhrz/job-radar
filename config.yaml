@@ -77,6 +77,24 @@ extra_sources:
   arbeitnow:          # free official API, Germany/EU/remote
     enabled: true
     pages: 3
+  kariyer:            # Kariyer.net (Turkey). Work model is on the card -> on-site/hybrid skipped early
+    enabled: true
+    list_urls:
+      - 'https://www.kariyer.net/is-ilanlari/remote?kw=.net'
+      - 'https://www.kariyer.net/is-ilanlari/remote?kw=c%23'
+      - 'https://www.kariyer.net/is-ilanlari/remote?kw=backend'
+      - 'https://www.kariyer.net/is-ilanlari?kw=.net'
+    max_details: 20
+    detail_delay_sec: [3, 7]
+  jaabz:              # international tech jobs; only the "Remote" tag matters to you
+    enabled: true
+    list_urls:
+      - 'https://jaabz.com/jobs?keyword=.net&remote=1'
+      - 'https://jaabz.com/jobs?keyword=c%23&remote=1'
+      - 'https://jaabz.com/jobs?keyword=backend&remote=1'
+      - 'https://jaabz.com/jobs/remote'
+    max_details: 20
+    detail_delay_sec: [3, 7]
   remote_boards:      # remote-only boards with free official APIs
     enabled: true
     boards: [himalayas, jobicy, remotive]
@@ -89,7 +107,7 @@ filters:
 
   # You can't relocate: on these boards the remote flag is reliable, so
   # remote == false means on-site/hybrid -> dropped.
-  require_remote_sites: [arbeitnow, himalayas, jobicy, remotive]
+  require_remote_sites: [arbeitnow, himalayas, jobicy, remotive, kariyer, jaabz]
 
   # Applying on Indeed needs a phone verification you can't pass: keep only Indeed
   # postings that link to the company's own career site (the card opens that link).
@@ -97,7 +115,7 @@ filters:
 
   # title must match at least one of these
   title_include:
-    - '\.net|dotnet|c#|csharp|asp\.?net'
+    - '(?<![a-z])\.net\b|dotnet|c#|csharp|asp\.?net'   # not the .Net in Kariyer.Net
     - 'back.?end|nest\.?js|node\.?js|full.?stack'
     - 'software (engineer|developer)|yaz[ıi]l[ıi]m|geli[şs]tirici'
     - '(integration|solutions?|implementation) (engineer|developer|specialist|architect)|technical solutions'
@@ -111,7 +129,7 @@ filters:
     - '\b(qa|tester|test automation|sdet)\b'
     - '\b(sap|salesforce|abap)\b'
     # other stacks, unless the title also mentions something we want
-    - '^(?!.*(\.net|c#|nest|node|full.?stack)).*\b(java|php|ruby|golang|scala|kotlin|rust|python|django|laravel)\b'
+    - '^(?!.*((?<![a-z])\.net|c#|nest|node|full.?stack)).*\b(java|php|ruby|golang|scala|kotlin|rust|python|django|laravel)\b'
     - '^(?!.*(\.net|c#)).*(\(go\)|\bgo (developer|engineer)\b)'
     - '^(?!.*(\.net|c#|full|back)).*\b(front.?end|react|angular|vue)\b'
 
@@ -137,7 +155,7 @@ scoring:
   min_score: 30
 
   title_keywords:
-    '\.net|dotnet|asp\.?net': 30
+    '(?<![a-z])\.net\b|dotnet|asp\.?net': 30
     'c#|csharp': 20
     'nest\.?js': 15
     '\b(senior|sr)\b|k[ıi]demli': 10
@@ -146,7 +164,7 @@ scoring:
     'fintech|payments?|trading|wallet|exchange': 5
 
   text_keywords:
-    '\.net|c#': 10
+    '(?<![a-z])\.net\b|c#': 10
     '\.net core|\.net ([5-9]|1[0-9])|asp\.net core': 10
     'entity framework|ef core': 5
     'sql server|mssql|t-sql': 5

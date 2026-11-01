@@ -117,6 +117,8 @@ def collect(cfg: dict, proxies: list[str], scrape_fn=None, sleep_fn=time.sleep,
     whose title passes the filters (`want_details`). A 429/403 on any site stops
     that site for the rest of the run instead of hammering it.
     """
+    if not any(t.get("enabled", True) and t.get("sites") for t in (cfg.get("targets") or [])):
+        return CollectResult()
     if scrape_fn is None:
         from jobspy import scrape_jobs as scrape_fn  # imported lazily: heavy
 

@@ -41,6 +41,7 @@ class Evaluator:
         self.title_include = _compile(f.get("title_include"))
         self.title_exclude = _compile(f.get("title_exclude"))
         self.hard_exclude = _compile(f.get("hard_exclude"))
+        self.location_exclude = _compile(f.get("location_exclude"))
         self.max_age_days = f.get("max_age_days")
 
         self.title_kw = _compile_weights(s.get("title_keywords"))
@@ -63,6 +64,9 @@ class Evaluator:
         for p in self.title_exclude:
             if p.search(title):
                 return Verdict("filtered", 0, [], f"title_exclude: {p.pattern}")
+        for p in self.location_exclude:
+            if p.search(job.location or ""):
+                return Verdict("filtered", 0, [], f"location: {(job.location or '')[:60]}")
         for p in self.hard_exclude:
             m = p.search(text)
             if m:

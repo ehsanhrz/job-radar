@@ -73,6 +73,11 @@ extra_sources:
   arbeitnow:          # free official API, Germany/EU/remote
     enabled: true
     pages: 3
+  remote_boards:      # remote-only boards with free official APIs
+    enabled: true
+    boards: [himalayas, jobicy, remotive]
+    search_terms: ['.net', 'c#', 'backend']
+    pages: 1
 
 # ── Hard filters: a match = job is dropped (stored as 'filtered', see `stats`) ──
 filters:
@@ -96,6 +101,11 @@ filters:
     - '^(?!.*(\.net|c#|nest|node|full.?stack)).*\b(java|php|ruby|golang|scala|kotlin|rust|python|django|laravel)\b'
     - '^(?!.*(\.net|c#)).*(\(go\)|\bgo (developer|engineer)\b)'
     - '^(?!.*(\.net|c#|full|back)).*\b(front.?end|react|angular|vue)\b'
+
+  # remote boards put their restriction in the location as "Remote: <where>".
+  # Drop specific-country/region restrictions that don't include somewhere you could qualify.
+  location_exclude:
+    - '^remote: (?!.*(worldwide|anywhere|global|emea|middle east|mena|asia|turkey|t[üu]rkiye|iran|europe|cet|gmt|utc)).+'
 
   # anywhere in title/description: impossible from Iran
   hard_exclude:

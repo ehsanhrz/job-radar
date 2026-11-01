@@ -40,13 +40,22 @@ def _scheduler(settings: Settings) -> None:
     interval_s = float(sched.get("interval_hours", 6)) * 3600
     jitter_s = float(sched.get("jitter_minutes", 30)) * 60
     db = DB(settings.db_path)
+    jitter = random.uniform(-jitter_s, jitter_s)
+    announced = None
     while True:
-        wait = _seconds_until_next(db, interval_s, jitter_s)
-        log.info("next scheduled run in %.0f min", wait / 60)
-        time.sleep(wait)
-        if not try_start_run(settings, notify_busy=False, background=False):
-            log.info("a run is already in progress, skipping this slot")
-            time.sleep(300)
+        # re-evaluated every minute: a manual /run moves the next slot back
+        wait = _seconds_until_next(db, interval_s, 0) + jitter
+        if wait > 60:
+            if announced is None or abs(announced - wait) > 600:
+                log.info("next scheduled run in %.0f min", wait / 60)
+            announced = wait
+            time.sleep(60)
+            continue
+        if try_start_run(settings, notify_busy=False, background=False):
+            jitter = random.uniform(-jitter_s, jitter_s)
+            announced = None
+        else:
+            time.sleep(300)  # a /run is in progress
 
 
 def _health_server(settings: Settings, port: int) -> None:
@@ -69,7 +78,26 @@ def _health_server(settings: Settings, port: int) -> None:
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
 
 
+def _announce_start(settings: Settings) -> None:
+    """Tells you on every (re)deploy whether the DB survived."""
+    from .telegram import Telegram, TelegramError
+    db = DB(settings.db_path)
+    st = db.stats()
+    total = sum(st.values())
+    created = (db.get_meta("db_created_at") or "")[:16].replace("T", " ")
+    last = (db.get_meta(LAST_RUN_KEY) or "never")[:16].replace("T", " ")
+    warn = ("\n⚠️ <b>Empty database.</b> If you saw jobs before, your disk is NOT persistent: "
+            "mount a persistent volume at /app/data.") if total == 0 and created else ""
+    try:
+        Telegram(settings.telegram_token, settings.telegram_chat_id, settings.telegram_proxy).send(
+            f"🟢 <b>Job Radar started</b>\nDB since {created} UTC · {total} jobs · "
+            f"applied {st.get('applied', 0)} · last run {last}{warn}")
+    except TelegramError as err:
+        log.warning("start message failed: %s", err)
+
+
 def serve(settings: Settings) -> None:
+    _announce_start(settings)
     threading.Thread(target=_scheduler, args=(settings,), daemon=True, name="scheduler").start()
     port = os.getenv("PORT")
     if port:

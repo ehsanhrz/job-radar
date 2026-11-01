@@ -64,6 +64,7 @@ class DB:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
         self._migrate()
+        self.conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('db_created_at', ?)", (now(),))
         self.conn.commit()
 
     def _migrate(self) -> None:

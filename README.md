@@ -1,11 +1,11 @@
 # 🛰 Job Radar
 
-Scrapes LinkedIn, Indeed, Bayt and Arbeitnow for backend / .NET roles that are
+Scrapes LinkedIn, Indeed, Bayt, Arbeitnow and the remote boards Himalayas, Jobicy and Remotive for backend / .NET roles that are
 **realistic to get while living in Iran**, scores them, and sends the good ones to
 your Telegram with **✅ Applied / ⏭ Skip / ⭐ Save** buttons.
 
 ```
-collect (JobSpy + Arbeitnow API)
+collect (JobSpy + Arbeitnow, Himalayas, Jobicy, Remotive APIs)
   → normalize → dedupe (URL + company/title/city fingerprint, across boards)
   → hard filters (US-only, "must reside in EU", clearance, junior, other stacks…)
   → score (.NET/C# ⬆, Turkish-language posting ⬆, remote ⬆, German-required ⬇ …)
@@ -89,7 +89,7 @@ On a PaaS (auto-deploy on git push):
 | `/stats`   | counts by status, source health, top filter reasons |
 | `/saved`   | your ⭐ jobs |
 | `/applied` | what you applied to |
-| `/run`     | scrape now (`serve` / `bot` mode only) |
+| `/run`     | scrape now; within 30 min of the last run it asks for `/run force` |
 
 Every job message has **✅ Applied / ⏭ Skip / ⭐ Save**, plus **↩️ Undo** after you tap one.
 
@@ -146,7 +146,8 @@ pytest -q
 ## Roadmap
 
 - [x] **Phase 1**: JobSpy (LinkedIn, Indeed, Bayt) + Arbeitnow → filters/scoring → Telegram, watchdog
-- [ ] **Phase 2**: Kariyer.net scraper (Turkish market), more Gulf boards
+- [x] **Phase 2a**: remote boards (Himalayas, Jobicy, Remotive) with location-restriction filter
+- [ ] **Phase 2b**: Kariyer.net scraper (Turkish market), more Gulf boards
 - [x] **Phase 3**: optional LLM pass (fit, feasible-from-Iran veto, red flags) with keyword fallback
 - [ ] **Phase 4**: weekly stats, quick tailored cover-letter drafts per job
 

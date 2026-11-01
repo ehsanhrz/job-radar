@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
+import requests
 import pytest
 import yaml
 
@@ -334,3 +335,109 @@ def test_token_not_leaked_in_errors():
     finally:
         t.time.sleep = orig
     assert "SECRET" not in str(ei.value) and "***" in str(ei.value)
+
+
+# ---------------- remote boards ----------------
+def test_remote_board_parsers_and_location_filter(ev):
+    from jobradar.collectors.remote_boards import himalayas_item, jobicy_item, remotive_item
+    h = himalayas_item({"title": "Senior .NET Engineer", "companyName": "Acme", "locationRestrictions": [],
+                        "applicationLink": "https://himalayas.app/companies/acme/jobs/x",
+                        "description": "<p>C# fintech</p>", "pubDate": 1761955200, "minSalary": 60000,
+                        "maxSalary": 80000, "currency": "USD"})
+    assert h.location == "Remote: Worldwide" and h.description == "C# fintech" and h.salary.startswith("60,000")
+    j = jobicy_item({"url": "https://jobicy.com/jobs/1", "jobTitle": "Backend Developer (C#)",
+                     "companyName": "B", "jobGeo": "USA", "pubDate": "2026-10-30T12:00:00+00:00",
+                     "jobDescription": "<b>.NET</b>"})
+    assert j.location == "Remote: USA" and j.date_posted.isoformat() == "2026-10-30"
+    r = remotive_item({"url": "https://remotive.com/x", "title": "C# Engineer", "company_name": "C",
+                       "candidate_required_location": "Europe, Turkey", "publication_date": "2026-10-31T10:00:00",
+                       "description": "remote"})
+    assert r.location == "Remote: Europe, Turkey"
+    # USA-only is dropped, worldwide and Europe/Turkey are kept
+    assert ev.evaluate(j).filter_reason.startswith("location:")
+    h.date_posted = r.date_posted = TODAY
+    assert ev.evaluate(h).status != "filtered"
+    assert ev.evaluate(r).status != "filtered"
+    # normal job-board locations are untouched by the remote rule
+    assert ev.evaluate(job("Senior .NET Developer", "C#", location="Austin, TX")).status != "filtered"
+    for bad in ({}, {"title": "x"}, {"url": "u"}):
+        assert himalayas_item(bad) is None and jobicy_item(bad) is None and remotive_item(bad) is None
+
+
+def test_remote_boards_collector_survives_failures():
+    from jobradar.collectors import remote_boards
+
+    class S:
+        def get(self, url, params=None, headers=None, timeout=None):
+            if "jobicy" in url:
+                raise requests.ConnectionError("down")
+
+            class R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    if "himalayas" in url:
+                        return {"jobs": [{"title": "C# Dev", "applicationLink": f"https://h/{params['q']}"}]} \
+                            if params["page"] == 1 else {"jobs": []}
+                    return {"jobs": [{"title": "C# Dev", "url": "https://r/1"}]}
+            return R()
+
+    import requests
+    cfg = {"extra_sources": {"remote_boards": {"enabled": True, "search_terms": ["c#"], "pages": 2}}}
+    res = remote_boards.collect(cfg, session=S(), sleep_fn=lambda s: None)
+    assert res.health["jobicy"].errors == 1
+    assert res.health["himalayas"].found == 1 and res.health["remotive"].found == 1
+
+
+# ---------------- bug fixes from first real deploy ----------------
+def _settings(tmp_path):
+    return Settings(raw=CFG, telegram_token="t", telegram_chat_id="42", telegram_proxy=None,
+                    scrape_proxies=[], db_path=tmp_path / "t.db")
+
+
+def test_button_for_unknown_job_is_reported(db, tmp_path):
+    from jobradar.bot import handle_update
+    tg = FakeTG()
+    cb = {"callback_query": {"id": "c", "data": "st:applied:deadbeefdeadbeef",
+                             "message": {"chat": {"id": 42}, "message_id": 1}}}
+    handle_update(db, tg, _settings(tmp_path), cb)
+    assert "not in the database" in tg.answers[-1]
+
+
+def test_applied_shows_up_in_list(db, ev, tmp_path):
+    from jobradar.bot import handle_update
+    r = CollectResult()
+    r.jobs = [job("Senior .NET Developer", "C#", target="Turkey")]
+    ingest(db, ev, r)
+    tg = FakeTG()
+    send_queued(db, tg, CFG, dry_run=False)
+    jid = r.jobs[0].id
+    handle_update(db, tg, _settings(tmp_path), {"callback_query": {
+        "id": "c", "data": f"st:applied:{jid}", "message": {"chat": {"id": 42}, "message_id": 1}}})
+    handle_update(db, tg, _settings(tmp_path), {"message": {"chat": {"id": 42}, "text": "/applied"}})
+    assert "Senior .NET Developer" in tg.sent[-1][0]
+
+
+def test_run_cooldown_and_force(db, tmp_path, monkeypatch):
+    from jobradar import bot
+    from jobradar.db import now
+    started = []
+    monkeypatch.setattr(bot, "try_start_run", lambda s, background=True, **k: started.append(1) or True)
+    tg = FakeTG()
+    db.set_meta("last_run_at", now())
+    msg = lambda t: {"message": {"chat": {"id": 42}, "text": t}}
+    bot.handle_update(db, tg, _settings(tmp_path), msg("/run"), allow_run=True)
+    assert started == [] and "/run force" in tg.sent[-1][0]
+    bot.handle_update(db, tg, _settings(tmp_path), msg("/run force"), allow_run=True)
+    assert started == [1]
+
+
+def test_scheduler_respects_manual_run(db):
+    """After a /run, the scheduler's next slot must move back to now + interval."""
+    from datetime import datetime, timedelta, timezone
+    from jobradar.serve import LAST_RUN_KEY, _seconds_until_next
+    db.set_meta(LAST_RUN_KEY, (datetime.now(timezone.utc) - timedelta(hours=5, minutes=55)).isoformat())
+    assert _seconds_until_next(db, 6 * 3600, 0) <= 301   # scheduled run due in ~5 min
+    db.set_meta(LAST_RUN_KEY, datetime.now(timezone.utc).isoformat())  # user hit /run
+    assert _seconds_until_next(db, 6 * 3600, 0) > 5.9 * 3600  # scheduler now waits ~6h

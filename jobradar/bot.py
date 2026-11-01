@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from datetime import datetime, timezone
 
 from .config import Settings
 from .db import DB
@@ -19,10 +20,11 @@ HELP = (
     "/stats – counts + source health\n"
     "/saved – jobs you starred\n"
     "/applied – jobs you applied to\n"
-    "/run – trigger a scrape now (bot mode only)\n"
+    "/run – scrape now (asks for <code>/run force</code> if it ran in the last 30 min)\n"
 )
 
 _run_lock = threading.Lock()
+RUN_COOLDOWN_MIN = 30
 
 
 def _stats_text(db: DB) -> str:
@@ -34,7 +36,10 @@ def _stats_text(db: DB) -> str:
         for s in db.source_summary()
     ) or "• no runs yet"
     reasons = "\n".join(f"• {e(r)}: {c}" for r, c in db.top_filter_reasons(5)) or "• —"
-    return f"📊 <b>Stats</b>\n{counts}\n\n<b>Sources</b>\n{src}\n\n<b>Top filter reasons</b>\n{reasons}"
+    created = (db.get_meta("db_created_at") or "?")[:16].replace("T", " ")
+    last = (db.get_meta("last_run_at") or "never")[:16].replace("T", " ")
+    return (f"📊 <b>Stats</b>\n{counts}\nDB since {created} UTC · last run {last} UTC\n\n"
+            f"<b>Sources</b>\n{src}\n\n<b>Top filter reasons</b>\n{reasons}")
 
 
 def _list_text(db: DB, status: str) -> str:
@@ -58,6 +63,10 @@ def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run
         data = cq.get("data") or ""
         if data.startswith("st:"):
             _, status, job_id = data.split(":", 2)
+            if db.get(job_id) is None:
+                log.warning("button for unknown job %s: DB was reset or another instance sent it", job_id)
+                tg.answer_callback(cq["id"], "⚠️ Job not in the database (was the DB wiped on redeploy?)")
+                return
             row = db.set_status(job_id, status)
             msg = cq.get("message") or {}
             buttons = job_buttons(job_id) if status == "sent" else status_buttons(job_id, status)
@@ -83,9 +92,15 @@ def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run
         tg.send(_list_text(db, "saved"))
     elif text == "/applied":
         tg.send(_list_text(db, "applied"))
-    elif text == "/run":
+    elif text in ("/run", "/run force"):
+        last = db.get_meta("last_run_at")
+        mins = None
+        if last:
+            mins = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() / 60
         if not allow_run:
             tg.send("/run only works when the bot is running in always-on mode.")
+        elif text == "/run" and mins is not None and mins < RUN_COOLDOWN_MIN:
+            tg.send(f"Last run started {mins:.0f} min ago. Send <code>/run force</code> to run anyway.")
         elif try_start_run(settings, background=True):
             tg.send("🛰 Starting a run…")
         else:

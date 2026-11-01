@@ -50,6 +50,18 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- one row per run; finished_at NULL = still running or killed (redeploy/crash)
+CREATE TABLE IF NOT EXISTS runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    trigger     TEXT,
+    summary     TEXT,
+    sources     TEXT,
+    alerts      TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_runs_started ON runs(started_at);
 """
 
 
@@ -202,6 +214,20 @@ class DB:
                 "calls": sum(r["calls"] for r in runs),
             })
         return out
+
+    # ---------- runs (for /report) ----------
+    def start_run(self, trigger: str) -> int:
+        cur = self.conn.execute("INSERT INTO runs (started_at, trigger) VALUES (?, ?)", (now(), trigger))
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def finish_run(self, run_id: int, summary: dict, sources: dict, alerts: list[str]) -> None:
+        self.conn.execute(
+            "UPDATE runs SET finished_at=?, summary=?, sources=?, alerts=? WHERE id=?",
+            (now(), json.dumps(summary, ensure_ascii=False, default=str),
+             json.dumps(sources, ensure_ascii=False), json.dumps(alerts, ensure_ascii=False), run_id),
+        )
+        self.conn.commit()
 
     # ---------- meta ----------
     def get_meta(self, key: str, default: str | None = None) -> str | None:

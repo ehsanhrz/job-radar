@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -22,6 +23,7 @@ HELP = (
     "/applied – jobs you applied to\n"
     "/vetoed – jobs the AI dropped, with its reason\n"
     "/rescore – re-apply the current rules to unsent jobs, then send new matches\n"
+    "/report [24h|7d|all] – full JSON report: runs, sources, issues, jobs\n"
     "/run – scrape now (asks for <code>/run force</code> if a run finished in the last 30 min)\n"
 )
 
@@ -110,6 +112,18 @@ def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run
         tg.send(_list_text(db, "saved"))
     elif text == "/applied":
         tg.send(_list_text(db, "applied"))
+    elif text == "/report" or text.startswith("/report "):
+        from .report import build_report, caption, report_json
+        arg = text.split(maxsplit=1)[1] if " " in text else "24h"
+        try:
+            name, data = report_json(db, settings.raw, arg)
+            rep = json.loads(data)
+            tg.send_document(name, data, caption(rep))
+        except ValueError as err:
+            tg.send(f"⚠️ {e(str(err))}")
+        except TelegramError as err:
+            log.error("report send failed: %s", err)
+            tg.send("⚠️ Couldn't send the report file, check the logs.")
     elif text == "/vetoed":
         tg.send(_vetoed_text(db))
     elif text == "/rescore":
@@ -134,7 +148,8 @@ def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run
             tg.send("A run is already in progress.")
 
 
-def try_start_run(settings: Settings, notify_busy: bool = True, background: bool = True) -> bool:
+def try_start_run(settings: Settings, notify_busy: bool = True, background: bool = True,
+                  trigger: str = "manual") -> bool:
     """Start a scrape unless one is running. Shared by /run and the scheduler."""
     if not _run_lock.acquire(blocking=False):
         return False
@@ -143,7 +158,7 @@ def try_start_run(settings: Settings, notify_busy: bool = True, background: bool
         from .pipeline import run_once
         try:
             # the bot thread owns getUpdates, so the run must not poll Telegram
-            run_once(settings, process_updates=False)
+            run_once(settings, process_updates=False, trigger=trigger)
         except Exception:  # noqa: BLE001
             log.exception("run failed")
         finally:

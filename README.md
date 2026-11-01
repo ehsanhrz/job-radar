@@ -91,6 +91,7 @@ On a PaaS (auto-deploy on git push):
 | `/applied` | what you applied to |
 | `/vetoed`  | jobs the AI dropped, with the quoted reason |
 | `/rescore` | re-apply current rules to unsent jobs and send new matches |
+| `/report [24h\|7d\|all]` | full JSON report as a file: runs, per-source health, detected issues, funnel, and the jobs (sent, applied, saved, AI-vetoed, near misses) |
 | `/run`     | scrape now; within 30 min of the last run it asks for `/run force` |
 
 Every job message has **✅ Applied / ⏭ Skip / ⭐ Save**, plus **↩️ Undo** after you tap one.
@@ -137,6 +138,18 @@ shared-VPN IPs. In order of effort:
 1. Do nothing for a day. Rate limits are often temporary.
 2. Lower `scrape.results_per_call` and/or raise `delay_between_calls_sec`.
 3. Put a **residential proxy** in `SCRAPE_PROXIES`. Traffic is tiny, so the cheapest plan is enough.
+
+## Reports
+
+`/report` in Telegram, or `python -m jobradar report 7d -o report.json` on the server, writes one JSON file with:
+
+- **runs**: trigger, start/end, duration, done/killed, per-source results, AI stats
+- **sources**: health over the period (`ok`, `degraded`, `empty`, `blocked_or_failing`) with the last error
+- **issues**: auto-detected problems (blocked sources, killed runs, AI off/failing, backlog)
+- **funnel**: found → new → filtered (grouped by reason) → low → queued → sent
+- **jobs**: sent in period, queued now, applied/saved (all time), skipped, AI-vetoed and near misses, each with score, reasons, AI verdict, link and a description snippet
+
+No secrets are included (API keys and tokens never go in the report).
 
 ## Tests
 

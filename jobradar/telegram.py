@@ -65,6 +65,18 @@ class Telegram:
             params["reply_markup"] = {"inline_keyboard": buttons}
         return self._call("sendMessage", **params)["message_id"]
 
+    def send_document(self, filename: str, data: bytes, caption: str = "") -> int:
+        try:
+            r = self.s.post(f"{self.base}/sendDocument",
+                            data={"chat_id": self.chat_id, "caption": caption[:1000]},
+                            files={"document": (filename, data, "application/json")}, timeout=60)
+        except requests.RequestException as e:
+            raise TelegramError(f"sendDocument: {str(e).replace(self._token, '***')}") from None
+        body = r.json() if r.content else {}
+        if not body.get("ok"):
+            raise TelegramError(f"sendDocument: {body.get('description') or r.status_code}")
+        return body["result"]["message_id"]
+
     def edit_buttons(self, chat_id: int | str, message_id: int, buttons: list[list[dict]]) -> None:
         try:
             self._call("editMessageReplyMarkup", chat_id=chat_id, message_id=message_id,

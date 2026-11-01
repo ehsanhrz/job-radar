@@ -17,6 +17,7 @@ class Settings:
     telegram_proxy: str | None
     scrape_proxies: list[str]
     db_path: Path
+    allowed_user_ids: frozenset[str] = frozenset()
 
     def section(self, name: str) -> dict[str, Any]:
         return self.raw.get(name) or {}
@@ -40,4 +41,6 @@ def load_settings(config_path: str | None = None) -> Settings:
         telegram_proxy=os.getenv("TELEGRAM_PROXY", "").strip() or None,
         scrape_proxies=proxies,
         db_path=db_path,
+        allowed_user_ids=frozenset(
+            u.strip() for u in os.getenv("TELEGRAM_ALLOWED_USER_IDS", "").split(",") if u.strip()),
     )

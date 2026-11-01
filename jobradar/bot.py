@@ -72,14 +72,32 @@ def _vetoed_text(db: DB) -> str:
     return "\n".join(lines)
 
 
+def is_authorized(upd: dict, settings: Settings) -> bool:
+    """Only YOUR chat, and only YOU in it. Everything else is dropped silently:
+    no reply, no button answer, nothing logged but the update id."""
+    cq = upd.get("callback_query")
+    if cq:
+        chat, sender = (cq.get("message") or {}).get("chat") or {}, cq.get("from") or {}
+    elif upd.get("message"):
+        chat, sender = upd["message"].get("chat") or {}, upd["message"].get("from") or {}
+    else:
+        return False  # edited messages, channel posts, joins, inline queries...: never handled
+    allowed_chat = str(settings.telegram_chat_id)
+    if not allowed_chat or str(chat.get("id")) != allowed_chat:
+        return False
+    sender_id = str(sender.get("id"))
+    allowed_users = settings.allowed_user_ids or frozenset({allowed_chat})
+    # private chat: chat id == your user id. In a group, only TELEGRAM_ALLOWED_USER_IDS may act.
+    return sender_id in allowed_users
+
+
 def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run: bool = False) -> None:
-    allowed = str(settings.telegram_chat_id)
+    if not is_authorized(upd, settings):
+        log.debug("ignored update %s (not from the owner's chat)", upd.get("update_id"))
+        return
 
     cq = upd.get("callback_query")
     if cq:
-        chat_id = str(((cq.get("message") or {}).get("chat") or {}).get("id"))
-        if chat_id != allowed:
-            return
         data = cq.get("data") or ""
         if data.startswith("st:"):
             _, status, job_id = data.split(":", 2)
@@ -101,9 +119,10 @@ def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run
         return
 
     msg = upd.get("message") or {}
-    if str((msg.get("chat") or {}).get("id")) != allowed:
-        return
-    text = (msg.get("text") or "").strip().split("@")[0]
+    text = (msg.get("text") or "").strip()
+    if text.startswith("/"):  # "/report@my_bot 7d" -> "/report 7d"
+        head, _, rest = text.partition(" ")
+        text = (head.split("@")[0] + (" " + rest if rest else "")).strip()
     if text in ("/start", "/help"):
         tg.send(HELP)
     elif text == "/stats":

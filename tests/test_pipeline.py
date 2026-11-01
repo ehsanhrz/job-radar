@@ -227,3 +227,35 @@ def test_watchdog_alerts_once_and_recovers(db):
     record_health(db, ok)
     msgs = watchdog(db, ok, cfg, tg)
     assert len(msgs) == 1 and "back" in msgs[0]
+
+
+# ---------------- real Telegram client (HTTP layer mocked) ----------------
+class _Resp:
+    def __init__(self, payload, status=200):
+        self._p, self.status_code, self.content, self.text = payload, status, b"x", str(payload)
+
+    def json(self):
+        return self._p
+
+
+class _Session:
+    def __init__(self, result):
+        self.calls, self.result, self.proxies = [], result, {}
+
+    def post(self, url, json=None, timeout=None):
+        self.calls.append((url.rsplit("/", 1)[-1], json, timeout))
+        return _Resp({"ok": True, "result": self.result})
+
+
+def test_telegram_client_get_updates_and_send():
+    from jobradar.telegram import Telegram
+    tg = Telegram("TOKEN", "42")
+    tg.s = _Session([])
+    assert tg.get_updates(None, timeout=0) == []
+    method, body, http_timeout = tg.s.calls[0]
+    assert method == "getUpdates" and body["timeout"] == 0 and http_timeout == 15
+
+    tg.s = _Session({"message_id": 7})
+    assert tg.send("hi", [[{"text": "a", "callback_data": "b"}]]) == 7
+    method, body, _ = tg.s.calls[0]
+    assert method == "sendMessage" and body["chat_id"] == "42" and body["parse_mode"] == "HTML"

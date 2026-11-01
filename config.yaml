@@ -193,10 +193,10 @@ ai:
   weight: 5                    # final = keyword_score + (fit - 5) * weight   (fit 0-10)
   veto_infeasible: true        # AI says "not possible from Iran" -> dropped
   veto_fit_at_or_below: 2      # AI fit 0-2 -> dropped
-  review_margin: 10            # also review 'low' jobs within N points of min_score (may promote)
+  review_margin: 0             # 0 = only jobs that already passed min_score (highest first)
   # Sized for Groq free tier (gpt-oss-120b: 8K tokens/min, 200K tokens/day).
   # One review ~1.5K tokens -> ~5/min max, ~120/day.
-  max_reviews_per_run: 25
+  max_reviews_per_run: 15     # highest keyword scores first
   min_seconds_between_calls: 15
   description_chars: 3000
   max_tokens: 1500             # reasoning models "think" inside this budget too

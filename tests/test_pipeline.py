@@ -278,7 +278,7 @@ def test_try_start_run_is_exclusive(monkeypatch, tmp_path):
     from jobradar import bot, pipeline
     gate, started = threading.Event(), threading.Event()
 
-    def fake_run_once(settings, process_updates=True):
+    def fake_run_once(settings, process_updates=True, **kw):
         assert process_updates is False
         started.set()
         gate.wait(5)

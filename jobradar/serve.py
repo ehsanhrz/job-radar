@@ -78,7 +78,7 @@ def _scheduler(settings: Settings) -> None:
             announced = wait
             time.sleep(60)
             continue
-        if try_start_run(settings, notify_busy=False, background=False):
+        if try_start_run(settings, notify_busy=False, background=False, trigger="schedule"):
             jitter = random.uniform(-jitter_s, jitter_s)
             announced = None
         else:

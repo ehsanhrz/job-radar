@@ -33,7 +33,7 @@ def cmd_loop(args, settings) -> None:
     while True:
         try:
             # in docker the bot container owns getUpdates, so don't fight over it
-            run_once(settings, process_updates=False)
+            run_once(settings, process_updates=False, trigger="loop")
         except Exception:  # noqa: BLE001
             log.exception("run failed")
         wait = hours * 3600 + random.uniform(-jitter, jitter) * 60
@@ -99,6 +99,16 @@ def cmd_probe(args, settings) -> None:
                 print(f"  detail FAIL {type(e).__name__}: {e}")
 
 
+def cmd_report(args, settings) -> None:
+    from .db import DB
+    from .report import report_json
+    name, data = report_json(DB(settings.db_path), settings.raw, args.period)
+    out = args.output or name
+    with open(out, "wb") as f:
+        f.write(data)
+    print(f"wrote {out} ({len(data) // 1024} KB)")
+
+
 def cmd_test_telegram(args, settings) -> None:
     from .telegram import Telegram
     tg = Telegram(settings.telegram_token, settings.telegram_chat_id, settings.telegram_proxy)
@@ -142,6 +152,9 @@ def main() -> None:
     sub.add_parser("rescore", help="re-apply filters after editing config.yaml")
     sub.add_parser("test-telegram", help="send a test message")
     sub.add_parser("probe", help="check what Kariyer.net / Jaabz return from this machine")
+    rp = sub.add_parser("report", help="write the full JSON report (runs, sources, issues, jobs)")
+    rp.add_argument("period", nargs="?", default="24h", help="24h | 7d | 2w | all")
+    rp.add_argument("-o", "--output", help="file name (default: jobradar-report-<period>-<time>.json)")
     sub.add_parser("chat-id", help="find your TELEGRAM_CHAT_ID")
 
     args = p.parse_args()
@@ -149,7 +162,7 @@ def main() -> None:
     settings = load_settings(args.config)
     {
         "run": cmd_run, "loop": cmd_loop, "serve": cmd_serve, "bot": cmd_bot, "stats": cmd_stats,
-        "rescore": cmd_rescore, "test-telegram": cmd_test_telegram, "probe": cmd_probe, "chat-id": cmd_chat_id,
+        "rescore": cmd_rescore, "test-telegram": cmd_test_telegram, "probe": cmd_probe, "report": cmd_report, "chat-id": cmd_chat_id,
     }[args.cmd](args, settings)
 
 

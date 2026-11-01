@@ -136,13 +136,16 @@ def send_queued(db: DB, tg: Telegram | None, cfg: dict, dry_run: bool) -> int:
     return sent
 
 
-def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = True) -> dict:
+def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = True,
+             trigger: str = "cli") -> dict:
     cfg = settings.raw
     db = DB(settings.db_path)
+    run_id = None
     if not dry_run:
         from .db import now
         db.set_meta("last_run_at", now())  # serve mode schedules from this
         db.set_meta("next_run_at", None)    # a one-off resume slot is consumed by any run
+        run_id = db.start_run(trigger)
     tg = None if dry_run else Telegram(settings.telegram_token, settings.telegram_chat_id,
                                        settings.telegram_proxy)
 
@@ -174,6 +177,9 @@ def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = 
     if not dry_run:
         from .db import now
         db.set_meta("last_run_finished_at", now())  # absent/older = the run was killed
+        db.finish_run(run_id, summary, {
+            k: {"calls": h.calls, "found": h.found, "errors": h.errors, "last_error": h.last_error}
+            for k, h in result.health.items()}, alerts)
 
     if tg and (cfg.get("telegram") or {}).get("send_run_summary", True):
         src = "\n".join(f"• {k}: {v}" for k, v in summary["sources"].items()) or "• (no sources ran)"

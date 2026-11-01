@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 
-from .ai import AIReviewer, apply_review
+from .ai import AIReviewer, Review, apply_review, job_text
 from .collectors import CollectResult, collect_all
 from .config import Settings
 from .db import DB
@@ -79,7 +79,7 @@ def ai_review_step(db: DB, reviewer: AIReviewer, cfg: dict) -> dict[str, int]:
             review = reviewer.review(dict(row))
             if review is None:
                 continue  # keeps its keyword score; may be retried next run if still unsent
-            final, veto = apply_review(row["score"], review, cfg)
+            final, veto = apply_review(row["score"], review, cfg, job_text(dict(row)))
             status = "filtered" if veto else ("queued" if final >= min_score else "low")
             db.save_ai(row["id"], row["score"], final, review.to_json(), status, veto)
             out["reviewed"] += 1
@@ -87,6 +87,32 @@ def ai_review_step(db: DB, reviewer: AIReviewer, cfg: dict) -> dict[str, int]:
             out["promoted"] += row["status"] == "low" and status == "queued"
         except Exception:  # noqa: BLE001 - belt and braces: AI must never break a run
             log.exception("AI step error on %s; keeping keyword score", row["id"])
+    return out
+
+
+def rescore_all(db: DB, cfg: dict) -> dict[str, int]:
+    """Re-apply keyword rules (and stored AI opinions) to every job not sent yet."""
+    from datetime import date
+    from .models import Job
+    ev = Evaluator(cfg)
+    out = {"changed": 0, "now_queued": 0}
+    for row in db.by_status(("filtered", "low", "queued"), limit=100_000):
+        job = Job(source=row["source"], site=row["site"], title=row["title"], url=row["url"],
+                  company=row["company"], location=row["location"], description=row["description"],
+                  is_remote=bool(row["is_remote"]) if row["is_remote"] is not None else None,
+                  date_posted=date.fromisoformat(row["date_posted"]) if row["date_posted"] else None,
+                  target=row["target"])
+        v = ev.evaluate(job)
+        status, score, reason = v.status, v.score, v.filter_reason
+        review = Review.from_json(row["ai_review"])
+        if review and v.status != "filtered":  # keep the AI's opinion on top of new rules
+            score, veto = apply_review(v.score, review, cfg, job_text(dict(row)))
+            status = "filtered" if veto else ("queued" if score >= ev.min_score else "low")
+            reason = veto
+        if status != row["status"] or score != row["score"]:
+            db.update_evaluation(row["id"], status, score, v.reasons, reason)
+            out["changed"] += 1
+    out["now_queued"] = len(db.queued(100_000))
     return out
 
 

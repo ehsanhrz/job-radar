@@ -131,13 +131,31 @@ def test_success_resets_failure_counter():
 
 # ---------- scoring ----------
 def test_apply_review():
-    assert apply_review(40, None, CFG) == (40, None)
-    assert apply_review(40, Review(8, "yes", "ok"), CFG) == (55, None)
-    assert apply_review(40, Review(3, "yes", "meh"), CFG) == (30, None)
-    _, veto = apply_review(40, Review(9, "no", "EU residence required"), CFG)
-    assert veto and "not feasible" in veto
-    _, veto = apply_review(80, Review(1, "yes", "Java role"), CFG)
-    assert veto and "poor fit" in veto
+    text = "Senior C# role. Candidates must be based in Germany. Remote within Germany only."
+    assert apply_review(40, None, CFG, text) == (40, None)
+    assert apply_review(40, Review(8, "yes", "ok"), CFG, text) == (55, None)
+    assert apply_review(40, Review(3, "yes", "meh"), CFG, text) == (30, None)
+    # veto only with a quote that really is in the posting
+    real = Review(9, "no", "EU residence", evidence="Candidates must be based in Germany.")
+    assert apply_review(40, real, CFG, text) == (60, "ai: not feasible from Iran")
+    _, veto = apply_review(80, Review(1, "yes", "Java role"), CFG, text)
+    assert veto == "ai: poor fit"
+
+
+def test_hallucinated_or_missing_evidence_cannot_veto():
+    text = "Senior C# engineer, fully remote, worldwide team."
+    no_quote = Review(9, "no", "sanctions", evidence="")
+    fake_quote = Review(9, "no", "sanctions", evidence="Applicants from Iran are not eligible")
+    too_short = Review(9, "no", "x", evidence="remote")
+    for rv in (no_quote, fake_quote, too_short):
+        score, veto = apply_review(40, rv, CFG, text)
+        assert veto is None and score == 60
+
+
+def test_old_reviews_without_evidence_field_load():
+    old = json.dumps({"fit": 7, "feasible": "no", "reason": "r", "flags": []})
+    rv = Review.from_json(old)
+    assert rv.evidence == "" and apply_review(40, rv, CFG, "anything")[1] is None
 
 
 def test_format_review_escapes_model_output():
@@ -154,7 +172,7 @@ def _db_with_jobs(tmp_path):
         Job(source="j", site="linkedin", title="Senior .NET Developer", url="https://x/1",
             description="ASP.NET Core, remote", target="Turkey", date_posted=date.today()),
         Job(source="j", site="linkedin", title="Backend Developer", url="https://x/2",
-            description="C# remote", date_posted=date.today()),
+            description="C# remote. You must live in Germany to apply.", date_posted=date.today()),
     ]
     ingest(db, Evaluator(CFG), r)
     return db
@@ -182,7 +200,8 @@ def test_pipeline_ai_dead_still_sends_everything(tmp_path):
 
 def test_pipeline_ai_veto_and_card(tmp_path):
     db = _db_with_jobs(tmp_path)
-    vetoed = json.dumps({"fit": 9, "feasible": "no", "reason": "must live in Germany", "flags": []})
+    vetoed = json.dumps({"fit": 9, "feasible": "no", "reason": "Germany only", "flags": [],
+                         "evidence": "You must live in Germany to apply."})
     out = ai_review_step(db, reviewer(ok(GOOD), ok(vetoed)), CFG)
     assert out["reviewed"] == 2 and out["vetoed"] == 1
     tg = FakeTG()
@@ -256,3 +275,13 @@ def test_out_of_tokens_is_explained(caplog):
 def test_null_content_does_not_crash():
     r = reviewer(Resp(200, {"choices": [{"message": {"content": None, "reasoning": "hmm"}}]}))
     assert r.review(JOB) is None
+
+
+def test_parse_reads_evidence():
+    r = parse_review('{"fit": 3, "feasible": "no", "reason": "r", "flags": [], "evidence": "US only"}')
+    assert r.evidence == "US only"
+
+
+def test_card_marks_unproven_no():
+    out = format_review(Review(7, "no", "r", evidence="made up").to_json())
+    assert "AI claim not found" in out and "⛔" not in out

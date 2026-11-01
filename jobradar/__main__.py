@@ -66,31 +66,9 @@ def cmd_stats(args, settings) -> None:
 def cmd_rescore(args, settings) -> None:
     """Re-apply filters/scoring to unsent jobs after you tweak config.yaml."""
     from .db import DB
-    from .ai import Review, apply_review
-    from .filters import Evaluator
-    from .models import Job
-    from datetime import date
-
-    db = DB(settings.db_path)
-    ev = Evaluator(settings.raw)
-    changed = 0
-    for row in db.by_status(("filtered", "low", "queued"), limit=100_000):
-        job = Job(source=row["source"], site=row["site"], title=row["title"], url=row["url"],
-                  company=row["company"], location=row["location"], description=row["description"],
-                  is_remote=bool(row["is_remote"]) if row["is_remote"] is not None else None,
-                  date_posted=date.fromisoformat(row["date_posted"]) if row["date_posted"] else None,
-                  target=row["target"])
-        v = ev.evaluate(job)
-        status, score, reason = v.status, v.score, v.filter_reason
-        review = Review.from_json(row["ai_review"])
-        if review and v.status != "filtered":  # keep the AI's opinion on top of new keyword rules
-            score, veto = apply_review(v.score, review, settings.raw)
-            status = "filtered" if veto else ("queued" if score >= ev.min_score else "low")
-            reason = veto
-        if status != row["status"] or score != row["score"]:
-            db.update_evaluation(row["id"], status, score, v.reasons, reason)
-            changed += 1
-    print(f"rescored: {changed} jobs changed. queued now: {len(db.queued(100_000))}")
+    from .pipeline import rescore_all
+    out = rescore_all(DB(settings.db_path), settings.raw)
+    print(f"rescored: {out['changed']} jobs changed. queued now: {out['now_queued']}")
 
 
 def cmd_test_telegram(args, settings) -> None:

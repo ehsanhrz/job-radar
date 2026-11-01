@@ -20,6 +20,8 @@ HELP = (
     "/stats – counts + source health\n"
     "/saved – jobs you starred\n"
     "/applied – jobs you applied to\n"
+    "/vetoed – jobs the AI dropped, with its reason\n"
+    "/rescore – re-apply the current rules to unsent jobs, then send new matches\n"
     "/run – scrape now (asks for <code>/run force</code> if a run finished in the last 30 min)\n"
 )
 
@@ -49,6 +51,22 @@ def _list_text(db: DB, status: str) -> str:
     lines = [f"<b>{status.title()} ({len(rows)})</b>"]
     for r in rows:
         lines.append(f'• <a href="{e(r["url"])}">{e(r["title"])}</a> — {e(r["company"] or "?")}')
+    return "\n".join(lines)
+
+
+def _vetoed_text(db: DB) -> str:
+    import json
+    rows = db.conn.execute(
+        "SELECT * FROM jobs WHERE status='filtered' AND filter_reason LIKE 'ai:%' "
+        "ORDER BY updated_at DESC LIMIT 15").fetchall()
+    if not rows:
+        return "The AI hasn't dropped anything."
+    lines = [f"<b>AI-dropped ({len(rows)})</b>"]
+    for r in rows:
+        rv = json.loads(r["ai_review"] or "{}")
+        why = rv.get("evidence") or rv.get("reason") or ""
+        lines.append(f'• <a href="{e(r["url"])}">{e(r["title"])}</a> ({e(r["company"] or "?")})\n'
+                     f'   {e(r["filter_reason"])}: <i>{e(why[:120])}</i>')
     return "\n".join(lines)
 
 
@@ -92,6 +110,13 @@ def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run
         tg.send(_list_text(db, "saved"))
     elif text == "/applied":
         tg.send(_list_text(db, "applied"))
+    elif text == "/vetoed":
+        tg.send(_vetoed_text(db))
+    elif text == "/rescore":
+        from .pipeline import rescore_all, send_queued
+        out = rescore_all(db, settings.raw)
+        sent = send_queued(db, tg, settings.raw, dry_run=False)
+        tg.send(f"♻️ Rescored: {out['changed']} changed · sent {sent} · still queued {out['now_queued'] - sent}")
     elif text in ("/run", "/run force"):
         # cooldown counts from the last run that actually FINISHED, so a run killed
         # by a redeploy doesn't block /run

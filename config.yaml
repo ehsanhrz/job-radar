@@ -117,7 +117,8 @@ filters:
 
   # You can't relocate: on these boards the remote flag is reliable, so
   # remote == false means on-site/hybrid -> dropped.
-  require_remote_sites: [arbeitnow, himalayas, jobicy, remotive, kariyer, jaabz, hn, remoteok, wwr]
+  require_remote_sites: [arbeitnow, himalayas, jobicy, remotive, kariyer, jaabz, hn, remoteok, wwr,
+                         greenhouse, lever, ashby, workable]
 
   # Applying on Indeed needs a phone verification you can't pass: keep only Indeed
   # postings that link to the company's own career site (the card opens that link).
@@ -224,6 +225,19 @@ scoring:
   fresh_bonus: 5        # posted in the last 2 days
   target_bonus:
     Turkey: 10
+
+# ── Company ATS watcher ──
+# Job links like boards.greenhouse.io/<co>, jobs.lever.co/<co>, jobs.ashbyhq.com/<co>,
+# apply.workable.com/<co> reveal a company's own hiring board. Those companies are
+# saved automatically and their boards are checked directly every run (public APIs,
+# no keys). You apply on the company's site: email + CV, no phone verification.
+ats:
+  enabled: true
+  discover: true
+  max_companies_per_run: 40    # least recently checked first; bounds the run time
+  delay_sec: [1, 3]
+  disable_after_failures: 3    # board gone / slug wrong -> stop checking it
+  skip_us_companies: true      # >=80% of a board's postings in the US -> skipped (sanctions)
 
 # ── Optional AI second opinion (needs AI_BASE_URL / AI_API_KEY / AI_MODEL in env) ──
 # Only reviews jobs that passed the keyword filter. ANY AI error -> keyword score is used.

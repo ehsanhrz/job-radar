@@ -62,6 +62,21 @@ CREATE TABLE IF NOT EXISTS runs (
     alerts      TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_runs_started ON runs(started_at);
+
+-- companies found through job links that point at their own hiring system (ATS)
+CREATE TABLE IF NOT EXISTS ats_companies (
+    ats            TEXT NOT NULL,          -- greenhouse | lever | ashby | workable
+    slug           TEXT NOT NULL,          -- board token, e.g. "acmepay"
+    company        TEXT,
+    discovered_at  TEXT NOT NULL,
+    discovered_via TEXT,                   -- url of the job that revealed it
+    last_checked   TEXT,
+    last_found     INTEGER,                -- postings on the board at last check
+    last_kept      INTEGER,                -- of those, remote + relevant title
+    failures       INTEGER NOT NULL DEFAULT 0,
+    disabled       TEXT,                   -- NULL = watched; otherwise the reason
+    PRIMARY KEY (ats, slug)
+);
 """
 
 

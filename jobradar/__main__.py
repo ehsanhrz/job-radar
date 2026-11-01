@@ -46,6 +46,11 @@ def cmd_bot(args, settings) -> None:
     run_bot(settings)
 
 
+def cmd_serve(args, settings) -> None:
+    from .serve import serve
+    serve(settings)
+
+
 def cmd_stats(args, settings) -> None:
     from .db import DB
     db = DB(settings.db_path)
@@ -118,7 +123,8 @@ def main() -> None:
     r.add_argument("--dry-run", action="store_true", help="print matches instead of sending")
     r.add_argument("--no-updates", action="store_true", help="don't process pending button taps")
     sub.add_parser("loop", help="run forever on the schedule in config.yaml")
-    sub.add_parser("bot", help="always-on Telegram bot (buttons + commands)")
+    sub.add_parser("serve", help="bot + scheduler in one process (single-container hosting)")
+    sub.add_parser("bot", help="always-on Telegram bot only (buttons + commands)")
     sub.add_parser("stats", help="print counts and source health")
     sub.add_parser("rescore", help="re-apply filters after editing config.yaml")
     sub.add_parser("test-telegram", help="send a test message")
@@ -128,7 +134,7 @@ def main() -> None:
     _setup_logging(args.verbose)
     settings = load_settings(args.config)
     {
-        "run": cmd_run, "loop": cmd_loop, "bot": cmd_bot, "stats": cmd_stats,
+        "run": cmd_run, "loop": cmd_loop, "serve": cmd_serve, "bot": cmd_bot, "stats": cmd_stats,
         "rescore": cmd_rescore, "test-telegram": cmd_test_telegram, "chat-id": cmd_chat_id,
     }[args.cmd](args, settings)
 

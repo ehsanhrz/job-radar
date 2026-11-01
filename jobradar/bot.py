@@ -86,21 +86,32 @@ def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run
     elif text == "/run":
         if not allow_run:
             tg.send("/run only works when the bot is running in always-on mode.")
-        elif not _run_lock.acquire(blocking=False):
-            tg.send("A run is already in progress.")
-        else:
+        elif try_start_run(settings, background=True):
             tg.send("🛰 Starting a run…")
-            threading.Thread(target=_threaded_run, args=(settings,), daemon=True).start()
+        else:
+            tg.send("A run is already in progress.")
 
 
-def _threaded_run(settings: Settings) -> None:
-    from .pipeline import run_once
-    try:
-        run_once(settings, process_updates=False)
-    except Exception:  # noqa: BLE001
-        log.exception("manual run failed")
-    finally:
-        _run_lock.release()
+def try_start_run(settings: Settings, notify_busy: bool = True, background: bool = True) -> bool:
+    """Start a scrape unless one is running. Shared by /run and the scheduler."""
+    if not _run_lock.acquire(blocking=False):
+        return False
+
+    def _go() -> None:
+        from .pipeline import run_once
+        try:
+            # the bot thread owns getUpdates, so the run must not poll Telegram
+            run_once(settings, process_updates=False)
+        except Exception:  # noqa: BLE001
+            log.exception("run failed")
+        finally:
+            _run_lock.release()
+
+    if background:
+        threading.Thread(target=_go, daemon=True, name="run").start()
+    else:
+        _go()
+    return True
 
 
 def process_pending(db: DB, tg: Telegram, settings: Settings) -> int:
@@ -127,7 +138,13 @@ def process_pending(db: DB, tg: Telegram, settings: Settings) -> int:
 def run_bot(settings: Settings) -> None:
     db = DB(settings.db_path)
     tg = Telegram(settings.telegram_token, settings.telegram_chat_id, settings.telegram_proxy)
-    log.info("bot online as @%s", tg.me().get("username"))
+    while True:  # don't crash-loop the container if Telegram is unreachable at boot
+        try:
+            log.info("bot online as @%s", tg.me().get("username"))
+            break
+        except TelegramError as err:
+            log.warning("Telegram not reachable yet: %s (retrying in 30s)", err)
+            time.sleep(30)
     while True:
         offset = db.get_meta("tg_offset")
         try:

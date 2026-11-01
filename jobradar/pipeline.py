@@ -83,6 +83,9 @@ def send_queued(db: DB, tg: Telegram | None, cfg: dict, dry_run: bool) -> int:
 def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = True) -> dict:
     cfg = settings.raw
     db = DB(settings.db_path)
+    if not dry_run:
+        from .db import now
+        db.set_meta("last_run_at", now())  # serve mode schedules from this
     tg = None if dry_run else Telegram(settings.telegram_token, settings.telegram_chat_id,
                                        settings.telegram_proxy)
 

@@ -259,3 +259,78 @@ def test_telegram_client_get_updates_and_send():
     assert tg.send("hi", [[{"text": "a", "callback_data": "b"}]]) == 7
     method, body, _ = tg.s.calls[0]
     assert method == "sendMessage" and body["chat_id"] == "42" and body["parse_mode"] == "HTML"
+
+
+# ---------------- serve mode ----------------
+def test_schedule_resumes_from_last_run(db):
+    from datetime import datetime, timedelta, timezone
+    from jobradar.serve import LAST_RUN_KEY, _seconds_until_next
+    assert _seconds_until_next(db, 6 * 3600, 0) == 60.0  # fresh install
+    db.set_meta(LAST_RUN_KEY, (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat())
+    assert 3.9 * 3600 < _seconds_until_next(db, 6 * 3600, 0) <= 4 * 3600  # redeploy: no immediate run
+    db.set_meta(LAST_RUN_KEY, (datetime.now(timezone.utc) - timedelta(hours=9)).isoformat())
+    assert _seconds_until_next(db, 6 * 3600, 0) == 60.0  # overdue: soon
+
+
+def test_try_start_run_is_exclusive(monkeypatch, tmp_path):
+    import threading
+    from jobradar import bot, pipeline
+    gate, started = threading.Event(), threading.Event()
+
+    def fake_run_once(settings, process_updates=True):
+        assert process_updates is False
+        started.set()
+        gate.wait(5)
+
+    monkeypatch.setattr(pipeline, "run_once", fake_run_once)
+    settings = Settings(raw=CFG, telegram_token="t", telegram_chat_id="1", telegram_proxy=None,
+                        scrape_proxies=[], db_path=tmp_path / "t.db")
+    assert bot.try_start_run(settings, background=True)
+    assert started.wait(5)
+    assert not bot.try_start_run(settings, background=True)  # /run while scheduler runs
+    gate.set()
+    for _ in range(50):
+        if not bot._run_lock.locked():
+            break
+        import time; time.sleep(0.05)
+    assert bot.try_start_run(settings, background=False)  # free again (gate already open)
+
+
+def test_health_endpoint(tmp_path):
+    import json, socket, threading, urllib.request
+    from jobradar.serve import _health_server
+    settings = Settings(raw=CFG, telegram_token="t", telegram_chat_id="1", telegram_proxy=None,
+                        scrape_proxies=[], db_path=tmp_path / "t.db")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]
+    threading.Thread(target=_health_server, args=(settings, port), daemon=True).start()
+    import time
+    for _ in range(50):
+        try:
+            body = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1).read()
+            break
+        except OSError:
+            time.sleep(0.05)
+    assert json.loads(body)["ok"] is True
+
+
+def test_token_not_leaked_in_errors():
+    import requests
+    from jobradar.telegram import Telegram, TelegramError
+
+    class Boom:
+        proxies = {}
+
+        def post(self, url, **kw):
+            raise requests.ConnectionError(f"failed {url}")
+
+    tg = Telegram("123:SECRET", "1")
+    tg.s = Boom()
+    import jobradar.telegram as t
+    t.time.sleep, orig = (lambda s: None), t.time.sleep
+    try:
+        with pytest.raises(TelegramError) as ei:
+            tg.me()
+    finally:
+        t.time.sleep = orig
+    assert "SECRET" not in str(ei.value) and "***" in str(ei.value)

@@ -28,6 +28,7 @@ class Telegram:
         if not token or not chat_id:
             raise TelegramError("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set in .env")
         self.base = f"https://api.telegram.org/bot{token}"
+        self._token = token
         self.chat_id = str(chat_id)
         self.s = requests.Session()
         if proxy:
@@ -40,7 +41,8 @@ class Telegram:
                 r = self.s.post(f"{self.base}/{method}", json=params, timeout=http_timeout)
             except requests.RequestException as e:
                 if attempt == 2:
-                    raise TelegramError(f"{method}: {e}") from e
+                    # requests puts the URL (with the bot token) in the message: mask it
+                    raise TelegramError(f"{method}: {str(e).replace(self._token, '***')}") from None
                 time.sleep(3)
                 continue
             data = r.json() if r.content else {}

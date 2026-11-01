@@ -62,19 +62,25 @@ them ~24h), so a once-a-morning run is enough. Jobs that didn't fit in
   SCRAPE_PROXIES=127.0.0.1:10809
   ```
 
-## 3. Always-on mode (VPS)
+## 3. Always-on mode (single container)
+
+One container runs everything: the Telegram bot (instant buttons, `/run`) **and**
+the scheduler (every `schedule.interval_hours` ± jitter) via `python -m jobradar serve`,
+which is the Dockerfile's default command.
 
 ```bash
-cp .env.example .env   # fill it in
-docker compose up -d --build
-docker compose logs -f
+docker build -t job-radar .
+docker run -d --name job-radar --restart unless-stopped \
+  --env-file .env -v $(pwd)/data:/app/data job-radar
 ```
 
-- `worker` scrapes every `schedule.interval_hours` (± jitter).
-- `bot` answers buttons instantly and supports `/run` to trigger a scrape.
-- `./data` holds the SQLite DB. **Back it up off-box**; if the VPS dies, copy
-  `data/` + `.env` to a new host and `docker compose up -d` again.
-- `config.yaml` is mounted read-only, so edit it and `docker compose restart worker`.
+On a PaaS (auto-deploy on git push):
+- Service type: **Docker**, Dockerfile in the repo root, branch `main`.
+- Set the env vars from `.env.example` (at least `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) in the platform's panel.
+- **Attach a persistent disk at `/app/data`.** Without it, your DB and application history are wiped on every deploy.
+- If the platform demands an open port, set `PORT=8080`. `GET /` returns a small health JSON.
+- The server must be **outside Iran**, since Telegram and LinkedIn are blocked there.
+- Redeploys don't trigger a scrape storm: the schedule continues from the last run time stored in the DB.
 
 ## 4. Telegram commands
 
@@ -83,7 +89,7 @@ docker compose logs -f
 | `/stats`   | counts by status, source health, top filter reasons |
 | `/saved`   | your ⭐ jobs |
 | `/applied` | what you applied to |
-| `/run`     | scrape now (always-on mode only) |
+| `/run`     | scrape now (`serve` / `bot` mode only) |
 
 Every job message has **✅ Applied / ⏭ Skip / ⭐ Save**, plus **↩️ Undo** after you tap one.
 

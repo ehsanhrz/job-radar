@@ -425,7 +425,7 @@ def test_run_cooldown_and_force(db, tmp_path, monkeypatch):
     started = []
     monkeypatch.setattr(bot, "try_start_run", lambda s, background=True, **k: started.append(1) or True)
     tg = FakeTG()
-    db.set_meta("last_run_at", now())
+    db.set_meta("last_run_finished_at", now())
     msg = lambda t: {"message": {"chat": {"id": 42}, "text": t}}
     bot.handle_update(db, tg, _settings(tmp_path), msg("/run"), allow_run=True)
     assert started == [] and "/run force" in tg.sent[-1][0]
@@ -498,3 +498,32 @@ def test_rate_limited_site_is_skipped_for_rest_of_run():
     jobspy_collector.collect(cfg, [], scrape_fn=scrape, sleep_fn=lambda s: None,
                              details_fn=lambda jid: {})
     assert calls.count("linkedin") == 1 and calls.count("bayt") == 3
+
+
+# ---------------- interrupted runs (redeploy mid-run) ----------------
+def test_interrupted_run_is_resumed_soon(db):
+    from datetime import datetime, timedelta, timezone
+    from jobradar.serve import (FINISHED_KEY, LAST_RUN_KEY, _seconds_until_next,
+                                reschedule_interrupted, run_was_interrupted)
+    t = lambda **kw: (datetime.now(timezone.utc) - timedelta(**kw)).isoformat(timespec="seconds")
+    # normal: finished after it started -> wait the full interval
+    db.set_meta(LAST_RUN_KEY, t(minutes=20)); db.set_meta(FINISHED_KEY, t(minutes=5))
+    assert not run_was_interrupted(db) and not reschedule_interrupted(db, 6 * 3600)
+    assert _seconds_until_next(db, 6 * 3600, 0) > 5 * 3600
+    # killed: started, never finished -> next run in ~5 min
+    db.set_meta(LAST_RUN_KEY, t(minutes=12)); db.set_meta(FINISHED_KEY, t(hours=7))
+    assert run_was_interrupted(db) and reschedule_interrupted(db, 6 * 3600)
+    assert 240 <= _seconds_until_next(db, 6 * 3600, 0) <= 310
+    assert not run_was_interrupted(db)  # only once
+
+
+def test_run_cooldown_ignores_killed_run(db, tmp_path, monkeypatch):
+    from jobradar import bot
+    from jobradar.db import now
+    started = []
+    monkeypatch.setattr(bot, "try_start_run", lambda s, background=True, **k: started.append(1) or True)
+    db.set_meta("last_run_at", now())          # started, then killed: no finished marker
+    tg = FakeTG()
+    bot.handle_update(db, tg, _settings(tmp_path), {"message": {"chat": {"id": 42}, "text": "/run"}},
+                      allow_run=True)
+    assert started == [1]

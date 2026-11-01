@@ -20,7 +20,7 @@ HELP = (
     "/stats – counts + source health\n"
     "/saved – jobs you starred\n"
     "/applied – jobs you applied to\n"
-    "/run – scrape now (asks for <code>/run force</code> if it ran in the last 30 min)\n"
+    "/run – scrape now (asks for <code>/run force</code> if a run finished in the last 30 min)\n"
 )
 
 _run_lock = threading.Lock()
@@ -37,8 +37,8 @@ def _stats_text(db: DB) -> str:
     ) or "• no runs yet"
     reasons = "\n".join(f"• {e(r)}: {c}" for r, c in db.top_filter_reasons(5)) or "• —"
     created = (db.get_meta("db_created_at") or "?")[:16].replace("T", " ")
-    last = (db.get_meta("last_run_at") or "never")[:16].replace("T", " ")
-    return (f"📊 <b>Stats</b>\n{counts}\nDB since {created} UTC · last run {last} UTC\n\n"
+    last = (db.get_meta("last_run_finished_at") or "never")[:16].replace("T", " ")
+    return (f"📊 <b>Stats</b>\n{counts}\nDB since {created} UTC · last finished run {last} UTC\n\n"
             f"<b>Sources</b>\n{src}\n\n<b>Top filter reasons</b>\n{reasons}")
 
 
@@ -93,14 +93,16 @@ def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run
     elif text == "/applied":
         tg.send(_list_text(db, "applied"))
     elif text in ("/run", "/run force"):
-        last = db.get_meta("last_run_at")
+        # cooldown counts from the last run that actually FINISHED, so a run killed
+        # by a redeploy doesn't block /run
+        last = db.get_meta("last_run_finished_at")
         mins = None
         if last:
             mins = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() / 60
         if not allow_run:
             tg.send("/run only works when the bot is running in always-on mode.")
         elif text == "/run" and mins is not None and mins < RUN_COOLDOWN_MIN:
-            tg.send(f"Last run started {mins:.0f} min ago. Send <code>/run force</code> to run anyway.")
+            tg.send(f"Last run finished {mins:.0f} min ago. Send <code>/run force</code> to run anyway.")
         elif try_start_run(settings, background=True):
             tg.send("🛰 Starting a run…")
         else:

@@ -82,7 +82,7 @@ extra_sources:
     impersonate: chrome   # 403 for Python's TLS fingerprint, 200 for Chrome's (tested from the server)
     list_urls:
       - 'https://www.kariyer.net/is-ilanlari/remote?kw=.net'
-      - 'https://www.kariyer.net/is-ilanlari/remote?kw=c%23'
+      - 'https://www.kariyer.net/is-ilanlari/remote?kw=asp.net'   # 'c%23' made Kariyer return every remote job
       - 'https://www.kariyer.net/is-ilanlari/remote?kw=backend'
       - 'https://www.kariyer.net/is-ilanlari?kw=.net'
     max_details: 20

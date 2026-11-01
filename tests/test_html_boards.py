@@ -220,3 +220,27 @@ def test_config_impersonates_for_kariyer_only():
     src = CFG["extra_sources"]
     assert src["kariyer"]["impersonate"] == "chrome"
     assert not src["jaabz"].get("impersonate")
+
+
+# ---------------- Jaabz search layout (article.jc) ----------------
+def test_jaabz_search_page_real_cards():
+    jobs = hb.parse_jaabz_list(page("jaabz_search"))
+    # 24 cards: 17 normal + 7 premium-locked (no link, hidden company) -> 17; no stray links
+    assert len(jobs) == 17
+    assert all(j.is_remote is True and j.company and j.title for j in jobs)
+    assert not any(j.company == "Hidden company" for j in jobs)
+    first = next(j for j in jobs if "294065" in j.url)
+    assert first.title == "Senior .NET Developer" and first.company == "Integer Consulting"
+    assert first.location == "Remote: Portugal" and ".Net" in first.description
+
+
+def test_jaabz_search_country_filter():
+    ev = Evaluator(CFG)
+    jobs = hb.parse_jaabz_list(page("jaabz_search"))
+    us = [j for j in jobs if j.location == "Remote: United States"]
+    assert us and all(ev.evaluate(j).filter_reason.startswith("location:") for j in us)
+
+
+def test_kariyer_csharp_search_term_replaced():
+    urls = CFG["extra_sources"]["kariyer"]["list_urls"]
+    assert not any("c%23" in u for u in urls)

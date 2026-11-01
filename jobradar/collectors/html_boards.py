@@ -180,33 +180,43 @@ JOB_URL_RE = re.compile(r"https://jaabz\.com/jobs/(\d+)-[a-z0-9-]+")
 
 
 def parse_jaabz_list(html: str) -> list[Job]:
+    """Two card layouts: /jobs/remote uses `article.hx-job`, search pages use `article.jc`."""
     soup = BeautifulSoup(html, "html.parser")
     jobs, seen = [], set()
-    for card in soup.select("article.hx-job"):
-        a = card.select_one(".hx-job-title a[href]")
-        if not a or not JOB_URL_RE.match(a["href"]):
+    for card in soup.select("article.hx-job, article.jc"):
+        classes = card.get("class") or []
+        if "premium-locked" in classes or "jc--locked" in classes:
+            continue  # "Hidden company / Log in to see location", no link
+        a = card.select_one(".hx-job-title a[href], .jc-title a[href]")
+        href = a["href"] if a else card.get("data-job-url", "")
+        if not JOB_URL_RE.match(href or ""):
             continue
-        url = a["href"].split("?")[0]
+        url = href.split("?")[0]
         if url in seen:
             continue
         seen.add(url)
-        perks = [_text(p).lower() for p in card.select(".hx-perk")]
-        where = _text(card.select_one(".hx-job-where"))
-        skills = [_text(li) for li in card.select(".hx-job-skills li")]
-        facts = [_text(s) for s in card.select(".hx-job-facts span")]
-        is_remote = True if "remote" in perks else (False if perks else None)
+        perks = [_text(p).lower() for p in card.select(".hx-perk, .jc-perk")]
+        where = _text(card.select_one(".hx-job-where, .jc-where"))
+        if where.lower().startswith("log in"):
+            where = ""
+        skills = [_text(li) for li in card.select(".hx-job-skills li, .jc-skills li")]
+        facts = [_text(sp) for sp in card.select(".hx-job-facts span, .jc-facts span")]
+        if "remote" in perks or "jc--remote" in classes:
+            is_remote = True
+        else:
+            is_remote = False if perks else None
         jobs.append(Job(
-            source="html_boards", site="jaabz", title=_text(a), url=url,
-            company=_text(card.select_one(".hx-job-company")) or None,
+            source="html_boards", site="jaabz", title=_text(a) if a else "", url=url,
+            company=_text(card.select_one(".hx-job-company, .jc-company")) or None,
             # "Remote: <country>" lets filters.location_exclude drop e.g. "Remote: United States"
             location=f"Remote: {where}" if is_remote and where else (where or None),
             is_remote=is_remote,
             description=("Skills: " + ", ".join(skills) + ". " + " · ".join(facts)) if skills or facts else None,
             target="Jaabz",
         ))
-    if jobs:
-        return jobs
-    # fallback: any job links + the ItemList names ("Title at Company — Remote")
+    if jobs or soup.select("article.hx-job, article.jc"):
+        return jobs  # a known layout was present: never fall back to loose links
+    # fallback (unknown layout): any job links + the ItemList names ("Title at Company — Remote")
     names = {}
     for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>', html, re.S):
         try:

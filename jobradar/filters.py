@@ -53,6 +53,13 @@ class Evaluator:
         self.target_bonus = {k: int(v) for k, v in (s.get("target_bonus") or {}).items()}
         self.min_score = int(s.get("min_score", 30))
 
+    def title_ok(self, job: Job) -> bool:
+        """Cheap pre-check (title rules only) used before fetching a description."""
+        title = job.title or ""
+        if self.title_include and not any(p.search(title) for p in self.title_include):
+            return False
+        return not any(p.search(title) for p in self.title_exclude)
+
     def evaluate(self, job: Job, today: date | None = None) -> Verdict:
         today = today or date.today()
         title = job.title or ""

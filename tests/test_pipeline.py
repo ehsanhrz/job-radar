@@ -441,3 +441,60 @@ def test_scheduler_respects_manual_run(db):
     assert _seconds_until_next(db, 6 * 3600, 0) <= 301   # scheduled run due in ~5 min
     db.set_meta(LAST_RUN_KEY, datetime.now(timezone.utc).isoformat())  # user hit /run
     assert _seconds_until_next(db, 6 * 3600, 0) > 5.9 * 3600  # scheduler now waits ~6h
+
+
+# ---------------- LinkedIn 429 handling ----------------
+def _li_df(n, start=0, err=None):
+    df = pd.DataFrame([{"site": "linkedin", "job_url": f"https://www.linkedin.com/jobs/view/{1000 + start + i}",
+                        "title": "Senior .NET Developer" if i % 2 == 0 else "Java Developer",
+                        "company": f"C{start + i}", "location": "Istanbul", "date_posted": TODAY,
+                        "description": None} for i in range(n)])
+    df.attrs = {"errors": {"linkedin": err} if err else {}}
+    return df
+
+
+def test_linkedin_search_without_descriptions_then_slow_details():
+    calls, fetched, sleeps = [], [], []
+
+    def scrape(**kw):
+        calls.append(kw)
+        return _li_df(4, start=len(calls) * 10)
+
+    cfg = {"search_terms": ["a"], "scrape": {"delay_between_calls_sec": [0, 0],
+                                             "linkedin_detail_delay_sec": [7, 7]},
+           "targets": [{"name": "TR", "sites": ["linkedin"], "location": "Türkiye"}]}
+    res = jobspy_collector.collect(
+        cfg, [], scrape_fn=scrape, sleep_fn=sleeps.append,
+        want_details=lambda j: "Java" not in j.title,
+        details_fn=lambda jid: fetched.append(jid) or {"description": f"desc {jid}"})
+    assert calls[0]["fetch_description"] is False            # search pages only
+    assert fetched == ["1010", "1012"]                         # only relevant ones
+    assert sleeps.count(7) == 1                                # paused between job pages
+    assert {j.description for j in res.jobs if ".NET" in j.title} == {"desc 1010", "desc 1012"}
+
+
+def test_linkedin_details_stop_when_throttled():
+    fetched = []
+    cfg = {"search_terms": ["a"], "scrape": {"delay_between_calls_sec": [0, 0]},
+           "targets": [{"name": "TR", "sites": ["linkedin"], "location": "X"}]}
+    res = jobspy_collector.collect(cfg, [], scrape_fn=lambda **kw: _li_df(10), sleep_fn=lambda s: None,
+                                   details_fn=lambda jid: fetched.append(jid) or {})
+    assert len(fetched) == 2                                   # gave up after 2 misses, not 10
+    assert "throttled" in res.health["linkedin"].last_error
+
+
+def test_rate_limited_site_is_skipped_for_rest_of_run():
+    calls = []
+
+    def scrape(**kw):
+        calls.append(kw["site_name"][0])
+        if kw["site_name"] == ["linkedin"]:
+            return _li_df(1, err="response status code 429 (blocked: use a proxy)")
+        df = pd.DataFrame([]); df.attrs = {"errors": {}}
+        return df
+
+    cfg = {"search_terms": ["a", "b", "c"], "scrape": {"delay_between_calls_sec": [0, 0]},
+           "targets": [{"name": "TR", "sites": ["linkedin", "bayt"], "location": "X"}]}
+    jobspy_collector.collect(cfg, [], scrape_fn=scrape, sleep_fn=lambda s: None,
+                             details_fn=lambda jid: {})
+    assert calls.count("linkedin") == 1 and calls.count("bayt") == 3

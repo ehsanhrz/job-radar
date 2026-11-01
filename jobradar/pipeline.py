@@ -125,9 +125,11 @@ def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = 
         process_pending(db, tg, settings)
 
     started = time.time()
-    result = collect_all(cfg, settings.scrape_proxies)
+    evaluator = Evaluator(cfg)
+    result = collect_all(cfg, settings.scrape_proxies,
+                         want_details=lambda job: not db.seen(job) and evaluator.title_ok(job))
     record_health(db, result)
-    counts = ingest(db, Evaluator(cfg), result)
+    counts = ingest(db, evaluator, result)
     reviewer = AIReviewer(cfg)
     ai = ai_review_step(db, reviewer, cfg)
     sent = send_queued(db, tg, cfg, dry_run)

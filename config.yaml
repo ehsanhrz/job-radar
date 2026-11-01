@@ -13,6 +13,10 @@ scrape:
   results_per_call: 20       # per site / target / search term
   fetch_description: true    # needed for good filtering (slower on LinkedIn)
   delay_between_calls_sec: [4, 10]   # random pause between requests, be polite
+  # LinkedIn: search pages first, then job pages one by one, only for NEW jobs
+  # whose title passes the filters. Hammering job pages is what triggers 429s.
+  linkedin_max_details: 40
+  linkedin_detail_delay_sec: [6, 12]
 
 # Default search terms for every target (LinkedIn + Indeed understand OR / quotes)
 search_terms:

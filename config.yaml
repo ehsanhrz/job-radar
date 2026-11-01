@@ -29,6 +29,15 @@ search_terms:
 # location         -> used by LinkedIn / Bayt
 # country_indeed   -> required for Indeed/Glassdoor (turkey, uae, oman, germany, netherlands, ...)
 targets:
+  # LinkedIn usually rate-limits after a few searches and is then skipped for the
+  # rest of the run, so the most valuable target goes FIRST.
+  - name: Worldwide (remote)
+    sites: [linkedin]
+    location: 'Worldwide'
+    is_remote: true
+    extra_search_terms:
+      - 'NestJS'
+
   - name: Turkey
     sites: [linkedin, indeed]
     location: 'Türkiye'
@@ -66,13 +75,6 @@ targets:
     country_indeed: netherlands
     is_remote: true
 
-  - name: Worldwide (remote)
-    sites: [linkedin]
-    location: 'Worldwide'
-    is_remote: true
-    extra_search_terms:
-      - 'NestJS'
-
 extra_sources:
   arbeitnow:          # free official API, Germany/EU/remote
     enabled: true
@@ -96,6 +98,13 @@ extra_sources:
       - 'https://jaabz.com/jobs/remote'
     max_details: 20
     detail_delay_sec: [3, 7]
+  feeds:              # free official feeds, no keys, no anti-bot
+    enabled: true
+    hn: true            # Hacker News "Who is hiring?" (monthly thread, apply by email / company site)
+    remoteok: true      # remoteok.com/api, latest ~100 remote jobs
+    wwr_rss:            # We Work Remotely category feeds
+      - 'https://weworkremotely.com/categories/remote-back-end-programming-jobs.rss'
+      - 'https://weworkremotely.com/categories/remote-full-stack-programming-jobs.rss'
   remote_boards:      # remote-only boards with free official APIs
     enabled: true
     boards: [himalayas, jobicy, remotive]
@@ -108,7 +117,7 @@ filters:
 
   # You can't relocate: on these boards the remote flag is reliable, so
   # remote == false means on-site/hybrid -> dropped.
-  require_remote_sites: [arbeitnow, himalayas, jobicy, remotive, kariyer, jaabz]
+  require_remote_sites: [arbeitnow, himalayas, jobicy, remotive, kariyer, jaabz, hn, remoteok, wwr]
 
   # Applying on Indeed needs a phone verification you can't pass: keep only Indeed
   # postings that link to the company's own career site (the card opens that link).

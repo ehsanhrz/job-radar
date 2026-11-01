@@ -77,6 +77,9 @@ def cmd_probe(args, settings) -> None:
     srcs = settings.section("extra_sources")
     for board, spec in hb.BOARDS.items():
         bcfg = srcs.get(board) or {}
+        if not bcfg.get("enabled", False):
+            print(f"\n=== {board}: disabled in config.yaml, skipped")
+            continue
         s = hb.make_session(bcfg)
         urls = bcfg.get("list_urls") or []
         print(f"\n=== {board} ({len(urls)} list urls, client: {type(s).__module__.split('.')[0]})")
@@ -97,6 +100,7 @@ def cmd_probe(args, settings) -> None:
                       f"fields={sorted(k for k, v in d.items() if v)}")
             except Exception as e:  # noqa: BLE001
                 print(f"  detail FAIL {type(e).__name__}: {e}")
+    _probe_feeds(settings)
 
 
 def cmd_report(args, settings) -> None:
@@ -107,6 +111,19 @@ def cmd_report(args, settings) -> None:
     with open(out, "wb") as f:
         f.write(data)
     print(f"wrote {out} ({len(data) // 1024} KB)")
+
+
+def _probe_feeds(settings) -> None:
+    from .collectors import feeds
+    res = feeds.collect(settings.raw)
+    print("\n=== feeds (hn / remoteok / wwr)")
+    for name, h in res.health.items():
+        status = "OK  " if not h.errors else "FAIL"
+        print(f"  {status} {name:<9} {h.found:>4} jobs  {h.last_error or ''}")
+    for site in ("hn", "remoteok", "wwr"):
+        j = next((x for x in res.jobs if x.site == site), None)
+        if j:
+            print(f"  sample {site}: {j.title[:70]} | {j.company} | {(j.location or '')[:50]} | remote={j.is_remote}")
 
 
 def cmd_test_telegram(args, settings) -> None:
@@ -151,7 +168,7 @@ def main() -> None:
     sub.add_parser("stats", help="print counts and source health")
     sub.add_parser("rescore", help="re-apply filters after editing config.yaml")
     sub.add_parser("test-telegram", help="send a test message")
-    sub.add_parser("probe", help="check what Kariyer.net / Jaabz return from this machine")
+    sub.add_parser("probe", help="check what the HTML boards and feeds return from this machine")
     rp = sub.add_parser("report", help="write the full JSON report (runs, sources, issues, jobs)")
     rp.add_argument("period", nargs="?", default="24h", help="24h | 7d | 2w | all")
     rp.add_argument("-o", "--output", help="file name (default: jobradar-report-<period>-<time>.json)")

@@ -115,7 +115,8 @@ def parse_remoteok(items: list) -> list[Job]:
             company=it.get("company"),
             location=f"Remote: {where}",
             is_remote=True,
-            description=_text(it.get("description")) + (f"\nTags: {tags}" if tags else ""),
+            description=_text(it.get("description")) + (f"\nTags: {tags}" if tags else "")
+            + (f"\nApply: {it['apply_url']}" if it.get("apply_url") else ""),
             date_posted=_date(it.get("epoch") or it.get("date")),
             salary=f"{int(lo):,}–{int(hi):,} USD" if lo and hi else None,
             target="RemoteOK",

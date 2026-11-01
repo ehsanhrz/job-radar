@@ -24,6 +24,7 @@ HELP = (
     "/vetoed – jobs the AI dropped, with its reason\n"
     "/rescore – re-apply the current rules to unsent jobs, then send new matches\n"
     "/report [24h|7d|all] – full JSON report: runs, sources, issues, jobs\n"
+    "/companies – company hiring boards the bot found and watches\n"
     "/run – scrape now (asks for <code>/run force</code> if a run finished in the last 30 min)\n"
 )
 
@@ -53,6 +54,19 @@ def _list_text(db: DB, status: str) -> str:
     lines = [f"<b>{status.title()} ({len(rows)})</b>"]
     for r in rows:
         lines.append(f'• <a href="{e(r["url"])}">{e(r["title"])}</a> — {e(r["company"] or "?")}')
+    return "\n".join(lines)
+
+
+def _companies_text(db: DB) -> str:
+    from .collectors.ats import summary
+    sm = summary(db)
+    if not sm["total"]:
+        return "No company boards discovered yet. They appear as jobs with Greenhouse/Lever/Ashby/Workable links come in."
+    off = ", ".join(f"{n} {e(r)}" for r, n in sm["disabled"].items()) or "none"
+    lines = [f"🏢 <b>Company boards</b>: watching {sm['watched']} of {sm['total']} (skipped: {off})"]
+    for c in sm["top"][:20]:
+        seen = "not checked yet" if c["last_checked"] is None else f"{c['last_kept'] or 0}/{c['last_found'] or 0} relevant"
+        lines.append(f"• {e(c['company'] or c['slug'])} <i>({c['ats']})</i>: {seen}")
     return "\n".join(lines)
 
 
@@ -143,6 +157,8 @@ def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run
         except TelegramError as err:
             log.error("report send failed: %s", err)
             tg.send("⚠️ Couldn't send the report file, check the logs.")
+    elif text == "/companies":
+        tg.send(_companies_text(db))
     elif text == "/vetoed":
         tg.send(_vetoed_text(db))
     elif text == "/rescore":

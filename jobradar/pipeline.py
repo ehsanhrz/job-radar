@@ -158,6 +158,9 @@ def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = 
     evaluator = Evaluator(cfg)
     result = collect_all(cfg, settings.scrape_proxies,
                          want_details=lambda job: not db.seen(job) and evaluator.title_ok(job))
+    # company boards found in those jobs (and earlier ones), checked directly; never breaks the run
+    from .collectors import ats
+    result.merge(ats.run_step(db, cfg, result, keep=evaluator.title_ok))
     record_health(db, result)
     counts = ingest(db, evaluator, result)
     reviewer = AIReviewer(cfg)

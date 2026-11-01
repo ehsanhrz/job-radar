@@ -90,6 +90,7 @@ On a PaaS (auto-deploy on git push):
 | `/saved`   | your ⭐ jobs |
 | `/applied` | what you applied to |
 | `/vetoed`  | jobs the AI dropped, with the quoted reason |
+| `/companies` | company hiring boards discovered and watched (Greenhouse / Lever / Ashby / Workable) |
 | `/rescore` | re-apply current rules to unsent jobs and send new matches |
 | `/report [24h\|7d\|all]` | full JSON report as a file: runs, per-source health, detected issues, funnel, and the jobs (sent, applied, saved, AI-vetoed, near misses) |
 | `/run`     | scrape now; within 30 min of the last run it asks for `/run force` |
@@ -138,6 +139,21 @@ shared-VPN IPs. In order of effort:
 1. Do nothing for a day. Rate limits are often temporary.
 2. Lower `scrape.results_per_call` and/or raise `delay_between_calls_sec`.
 3. Put a **residential proxy** in `SCRAPE_PROXIES`. Traffic is tiny, so the cheapest plan is enough.
+
+## Company boards (ATS watcher)
+
+No company list to maintain. Whenever a job (from any source) links to a company's own
+hiring system, i.e. `boards.greenhouse.io/<co>`, `jobs.lever.co/<co>`, `jobs.ashbyhq.com/<co>`
+or `apply.workable.com/<co>`, that company is saved, and from then on its board is read
+**directly** every run through the ATS's public API (no keys, no anti-bot). That catches
+its other openings too, including ones never posted on job boards. Applying happens on the
+company's site: email and CV, no phone verification.
+
+Safety rails: max `ats.max_companies_per_run` boards per run (least recently checked first),
+postings pre-filtered by title and remote before they're stored, 3 failures in a row disables
+a board, a 429 pauses the watcher for the run, boards where ≥80% of postings are in the US
+are skipped (sanctions), and any error in this step leaves the rest of the run untouched.
+`/companies` shows what's watched.
 
 ## Reports
 

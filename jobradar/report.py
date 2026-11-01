@@ -165,9 +165,18 @@ def build_report(db: DB, cfg: dict, period: str | None = "24h") -> dict:
                 (since_s,), 15),
         },
         "config": _config_summary(cfg),
+        "ats_companies": _ats(db),
     }
     report["issues"] = _issues(report, interrupted, cfg)
     return report
+
+
+def _ats(db: DB) -> dict:
+    try:
+        from .collectors.ats import summary
+        return summary(db)
+    except Exception:  # noqa: BLE001 - never break the report
+        return {}
 
 
 def _config_summary(cfg: dict) -> dict:

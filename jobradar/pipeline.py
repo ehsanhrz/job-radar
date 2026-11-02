@@ -160,7 +160,9 @@ def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = 
                          want_details=lambda job: not db.seen(job) and evaluator.title_ok(job))
     # company boards found in those jobs (and earlier ones), checked directly; never breaks the run
     from .collectors import ats
-    result.merge(ats.run_step(db, cfg, result, keep=evaluator.title_ok))
+    # keep only postings that would actually be sent (full filters + score), not just a title match
+    result.merge(ats.run_step(db, cfg, result,
+                              keep=lambda j: evaluator.evaluate(j).status == "queued"))
     record_health(db, result)
     counts = ingest(db, evaluator, result)
     reviewer = AIReviewer(cfg)

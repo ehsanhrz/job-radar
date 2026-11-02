@@ -120,6 +120,9 @@ by an LLM, which knows your profile from `AI_PROFILE`. It returns:
 
 - **fit 0–10** → final score = keyword score + (fit − 5) × `ai.weight`
 - **feasible from Iran?** yes / no / unclear. A "no" only vetoes the job if the AI **quotes the restricting sentence and that exact text is in the posting**. Guesses like "sanctions" can't veto anything.
+- **US company?** yes / no / unclear, plus where it's headquartered. A US-headquartered or
+  US-owned employer can't hire someone in Iran (OFAC), so `yes` vetoes the job
+  (`ai.veto_us_company`). The card shows `🏢 HQ: …` otherwise.
 - **red flags**, e.g. "needs AWS" or "German C1"
 
 The card then shows `🤖 8/10 · fintech .NET match · ✅ Iran-remote yes`.
@@ -145,14 +148,16 @@ shared-VPN IPs. In order of effort:
 No company list to maintain. Whenever a job (from any source) links to a company's own
 hiring system, i.e. `boards.greenhouse.io/<co>`, `jobs.lever.co/<co>`, `jobs.ashbyhq.com/<co>`
 or `apply.workable.com/<co>`, that company is saved, and from then on its board is read
-**directly** every run through the ATS's public API (no keys, no anti-bot). That catches
+**directly** (at most once every `ats.check_interval_hours`) through the ATS's public API (no keys, no anti-bot). That catches
 its other openings too, including ones never posted on job boards. Applying happens on the
 company's site: email and CV, no phone verification.
 
 Safety rails: max `ats.max_companies_per_run` boards per run (least recently checked first),
-postings pre-filtered by title and remote before they're stored, 3 failures in a row disables
-a board, a 429 pauses the watcher for the run, boards where ≥80% of postings are in the US
-are skipped (sanctions), and any error in this step leaves the rest of the run untouched.
+only postings that would actually be sent (remote, full filters and score) are stored,
+3 failures in a row disables a board, so does `ats.disable_after_empty_checks` checks in a row
+with nothing relevant, a 429 pauses the watcher for the run, boards where most postings
+(`ats.us_share`) are in the US / North America are skipped (sanctions), and any error in this
+step leaves the rest of the run untouched.
 `/companies` shows what's watched.
 
 ## Reports

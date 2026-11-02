@@ -678,3 +678,26 @@ def test_foreign_language_penalty_applied(ev):
     assert any(r.startswith("written in german") for r in a.reasons)
     b = ev.evaluate(job("Senior .NET Developer", de + " The working language is English."))
     assert not any(r.startswith("written in") for r in b.reasons)
+
+
+# ---------------- PR #13: US locations + per-site adjustment ----------------
+def test_us_locations_are_dropped_and_wwr_is_penalised():
+    import yaml
+    from pathlib import Path
+    from jobradar.filters import Evaluator
+    from jobradar.models import Job
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / "config.yaml").read_text(encoding="utf-8"))
+    ev = Evaluator(cfg)
+    desc = "Senior .NET engineer, C#, PostgreSQL, fintech, fully remote"
+    for loc in ("New York, NY, USA", "United States", "Arlington, VA, United States"):
+        v = ev.evaluate(Job(source="x", site="linkedin", title="Senior .NET Developer", url="https://l/1",
+                            location=loc, is_remote=True, description=desc))
+        assert v.status == "filtered" and v.filter_reason.startswith("location"), loc
+    ok = ev.evaluate(Job(source="x", site="linkedin", title="Senior .NET Developer", url="https://l/2",
+                         location="Toronto, Ontario, Canada", is_remote=True, description=desc))
+    assert ok.status == "queued"                                   # "Ontario" etc. untouched
+    base = dict(source="x", title="Senior .NET Developer", url="https://w/1", is_remote=True,
+                location="Remote: Anywhere in the World", description=desc)
+    wwr = ev.evaluate(Job(site="wwr", **base))
+    other = ev.evaluate(Job(site="remoteok", **base))
+    assert other.score - wwr.score == 20 and "wwr -20" in wwr.reasons

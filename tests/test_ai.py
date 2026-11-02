@@ -285,3 +285,33 @@ def test_parse_reads_evidence():
 def test_card_marks_unproven_no():
     out = format_review(Review(7, "no", "r", evidence="made up").to_json())
     assert "AI claim not found" in out and "⛔" not in out
+
+
+# ---------------- PR #13: US-headquartered companies (OFAC) ----------------
+def test_parse_reads_us_company_and_hq():
+    rv = parse_review('{"fit": 7, "feasible": "unclear", "us_company": "YES", "hq": "USA (Menlo Park)", '
+                      '"reason": "r", "flags": []}')
+    assert rv.us_company == "yes" and rv.hq == "USA (Menlo Park)"
+    assert parse_review('{"fit": 7, "us_company": "maybe"}').us_company == "unclear"
+
+
+def test_us_company_is_vetoed_and_others_are_not():
+    text = "Senior C# engineer, remote."
+    us = Review(8, "unclear", "good", us_company="yes", hq="USA (Menlo Park)")
+    assert apply_review(40, us, CFG, text)[1] == "ai: US company (USA (Menlo Park))"
+    for v in ("no", "unclear"):
+        assert apply_review(40, Review(8, "unclear", "good", us_company=v), CFG, text)[1] is None
+    off = {**CFG, "ai": {**CFG["ai"], "veto_us_company": False}}
+    assert apply_review(40, us, off, text)[1] is None
+
+
+def test_card_shows_hq_and_us_warning():
+    card = format_review(Review(7, "yes", "ok", us_company="no", hq="Estonia").to_json())
+    assert "HQ: Estonia" in card
+    card = format_review(Review(7, "unclear", "ok", us_company="yes", hq="USA").to_json())
+    assert "US company" in card and "OFAC" in card
+
+
+def test_old_review_json_with_unknown_keys_loads():
+    rv = Review.from_json(json.dumps({"fit": 6, "feasible": "yes", "reason": "r", "flags": [], "future": 1}))
+    assert rv.us_company == "unclear" and rv.hq == ""

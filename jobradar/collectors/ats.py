@@ -4,10 +4,11 @@
        boards.greenhouse.io/<slug>   jobs.lever.co/<slug>
        jobs.ashbyhq.com/<slug>       apply.workable.com/<slug>
    adds that company to `ats_companies` (no list to maintain).
-2. WATCH: every run, the least-recently-checked companies' public job APIs
-   are read (no keys, no anti-bot) and their postings go through the normal
-   filters. Pre-filtered first (title rules + remote), so a company with
-   500 openings never floods the DB.
+2. WATCH: companies not checked in the last `check_interval_hours` have their
+   public job APIs read (no keys, no anti-bot). Only postings that would
+   actually be sent (remote + full filters/score) are kept, so a company with
+   500 openings never floods the DB; a board with nothing relevant N checks
+   in a row is disabled.
 
 Safety: every company is isolated (one failing board never affects another),
 3 failures in a row disables a board, a 429 stops the watcher for the run,
@@ -20,7 +21,7 @@ import logging
 import random
 import re
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Iterable
 
 import requests
@@ -44,7 +45,8 @@ PATTERNS = {
 NOT_SLUGS = {"embed", "api", "j", "jobs", "job", "careers", "search", "v1", "share", "static", "assets"}
 
 US_HINT = re.compile(
-    r"\b(united states|usa|u\.s\.|us only|us-only|remote[ ,(-]*us\b|"
+    r"\b(united states|usa|u\.s\.|us only|us-only|remote[ ,(-]*us\b|\bus[ -]remote|north america|"
+    r"americas|canada|toronto|vancouver|"
     r"new york|san francisco|seattle|austin|boston|chicago|los angeles|denver|atlanta|"
     r"[A-Z][a-z]+, (?:CA|NY|TX|WA|MA|IL|CO|GA|FL|NC|VA|PA|OR|NJ|AZ|UT|MN|OH|MI)\b)", re.I)
 
@@ -176,12 +178,12 @@ ENDPOINTS: dict[str, tuple[str, Callable]] = {
 }
 
 
-def looks_us_based(jobs: list[Job]) -> bool:
-    """>= 3 postings and >= 80% of them point at US locations."""
+def looks_us_based(jobs: list[Job], share: float = 0.6) -> bool:
+    """>= 3 postings and most of them point at US / North American locations."""
     if len(jobs) < 3:
         return False
     us = sum(1 for j in jobs if US_HINT.search(j.location or ""))
-    return us / len(jobs) >= 0.8
+    return us / len(jobs) >= share
 
 
 # ---------------- watcher ----------------
@@ -207,10 +209,15 @@ def watch(db: DB, cfg: dict, keep: Callable[[Job], bool] | None = None,
     session = session or requests.Session()
     limit = int(acfg.get("max_companies_per_run", 40))
     max_fail = int(acfg.get("disable_after_failures", 3))
+    max_empty = int(acfg.get("disable_after_empty_checks", 0))
+    us_share = float(acfg.get("us_share", 0.6))
     lo, hi = acfg.get("delay_sec", [1, 3])
+    # a board rarely changes within a day: re-check each company at most every N hours
+    hours = float(acfg.get("check_interval_hours", 0))
+    due = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
     rows = db.conn.execute(
-        "SELECT * FROM ats_companies WHERE disabled IS NULL "
-        "ORDER BY last_checked IS NOT NULL, last_checked LIMIT ?", (limit,)).fetchall()
+        "SELECT * FROM ats_companies WHERE disabled IS NULL AND (last_checked IS NULL OR last_checked <= ?) "
+        "ORDER BY last_checked IS NOT NULL, last_checked LIMIT ?", (due, limit)).fetchall()
     for i, row in enumerate(rows):
         ats, slug = row["ats"], row["slug"]
         if ats not in ENDPOINTS:
@@ -233,14 +240,17 @@ def watch(db: DB, cfg: dict, keep: Callable[[Job], bool] | None = None,
             continue
 
         disabled = None
-        if acfg.get("skip_us_companies", True) and looks_us_based(postings):
+        if acfg.get("skip_us_companies", True) and looks_us_based(postings, us_share):
             disabled = "looks US-based (sanctions)"
         kept = [] if disabled else [
             j for j in postings if j.is_remote is not False and (keep is None or keep(j))]
+        empty = 0 if kept else (row["empty_checks"] or 0) + 1
+        if not disabled and max_empty and empty >= max_empty:
+            disabled = f"nothing relevant in {empty} checks"
         db.conn.execute(
             "UPDATE ats_companies SET last_checked=?, last_found=?, last_kept=?, failures=0, disabled=?, "
-            "company=COALESCE(?, company) WHERE ats=? AND slug=?",
-            (now(), len(postings), len(kept), disabled,
+            "empty_checks=?, company=COALESCE(?, company) WHERE ats=? AND slug=?",
+            (now(), len(postings), len(kept), disabled, empty,
              postings[0].company if postings else None, ats, slug))
         db.conn.commit()
         result.jobs.extend(kept)

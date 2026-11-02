@@ -69,6 +69,8 @@ def test_report_structure_and_issues(tmp_path):
     whats = " | ".join(i["what"] for i in rep["issues"])
     assert "killed" in whats and "key rejected" in whats and "0 jobs in 1 run" in whats
     assert rep["funnel"]["found"] == 40 and rep["funnel"]["sent"] == 1
+    f = rep["funnel"]                                    # stages add up (post-AI, current status)
+    assert f["new"] == sum(f[k] for k in ("filtered", "ai_vetoed", "low", "queued", "reached_you"))
     assert rep["jobs"]["applied_all_time"][0]["title"] == "Senior .NET Developer"
     assert any("title" in k for k in rep["funnel"]["filter_reasons"])     # the Java job
     job = rep["jobs"]["applied_all_time"][0]

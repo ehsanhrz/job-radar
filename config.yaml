@@ -108,7 +108,9 @@ extra_sources:
   remote_boards:      # remote-only boards with free official APIs
     enabled: true
     boards: [himalayas, jobicy, remotive]
-    search_terms: ['.net', 'backend']   # 'c#' -> HTTP 400 on Jobicy
+    search_terms: ['.net', 'c#', 'backend']
+    skip_terms:                         # per board: terms it can't handle
+      jobicy: ['c#']                    # HTTP 400
     pages: 1
 
 # ── Hard filters: a match = job is dropped (stored as 'filtered', see `stats`) ──
@@ -215,7 +217,7 @@ scoring:
     '\b(on-?site|in-?office|office-based)\b': -15   # you can't relocate right now
     '\bhybrid\b': -10
     # Turkish on-site / hybrid wording
-    'ofisten [çc]al[ıi][şs]|ofiste [çc]al[ıi][şs]|y[üu]z y[üu]ze [çc]al[ıi][şs]|i[şs]yerinde': -15
+    'ofisten [çc]al[ıi][şs]|ofiste [çc]al[ıi][şs]|y[üu]z y[üu]ze [çc]al[ıi][şs]|i[şs] ?yerinde': -15
     '\bhibrit\b': -10
 
   remote_bonus: 10      # is_remote flag or "remote"/"uzaktan" in text

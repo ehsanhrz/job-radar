@@ -70,6 +70,31 @@ def _companies_text(db: DB) -> str:
     return "\n".join(lines)
 
 
+TG_LIMIT = 3900  # Telegram rejects messages over 4096 characters
+
+
+def split_message(text: str, limit: int = TG_LIMIT) -> list[str]:
+    """Split on line breaks so HTML tags (one per line here) are never cut in half."""
+    chunks, cur = [], ""
+    for line in text.split("\n"):
+        while len(line) > limit:            # a single monster line: hard cut (rare)
+            chunks.append(line[:limit])
+            line = line[limit:]
+        if cur and len(cur) + 1 + len(line) > limit:
+            chunks.append(cur)
+            cur = line
+        else:
+            cur = f"{cur}\n{line}" if cur else line
+    if cur:
+        chunks.append(cur)
+    return chunks or [""]
+
+
+def send_long(tg: Telegram, text: str) -> None:
+    for chunk in split_message(text):
+        tg.send(chunk)
+
+
 def _vetoed_text(db: DB) -> str:
     import json
     rows = db.conn.execute(
@@ -158,13 +183,20 @@ def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run
             log.error("report send failed: %s", err)
             tg.send("⚠️ Couldn't send the report file, check the logs.")
     elif text == "/companies":
-        tg.send(_companies_text(db))
+        send_long(tg, _companies_text(db))
     elif text == "/vetoed":
-        tg.send(_vetoed_text(db))
+        send_long(tg, _vetoed_text(db))
     elif text == "/rescore":
-        from .pipeline import rescore_all, send_queued
-        out = rescore_all(db, settings.raw)
-        sent = send_queued(db, tg, settings.raw, dry_run=False)
+        # same lock as runs: otherwise a run and /rescore can both send the same queued job
+        if not _run_lock.acquire(blocking=False):
+            tg.send("A run is in progress. Send /rescore again when it's done.")
+            return
+        try:
+            from .pipeline import rescore_all, send_queued
+            out = rescore_all(db, settings.raw)
+            sent = send_queued(db, tg, settings.raw, dry_run=False)
+        finally:
+            _run_lock.release()
         tg.send(f"♻️ Rescored: {out['changed']} changed · sent {sent} · still queued {out['now_queued'] - sent}")
     elif text in ("/run", "/run force"):
         # cooldown counts from the last run that actually FINISHED, so a run killed

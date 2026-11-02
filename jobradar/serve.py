@@ -27,13 +27,16 @@ log = logging.getLogger("serve")
 LAST_RUN_KEY = "last_run_at"
 FINISHED_KEY = "last_run_finished_at"
 NEXT_RUN_KEY = "next_run_at"  # one-off override (resume after a killed run)
+HANDLED_KEY = "interrupted_run_handled"  # start time of the killed run already rescheduled
 RESUME_AFTER_SEC = 300
 
 
 def run_was_interrupted(db: DB) -> bool:
     """A run started but never finished (container restarted/redeployed mid-run)."""
     started, finished = db.get_meta(LAST_RUN_KEY), db.get_meta(FINISHED_KEY)
-    return bool(started) and (not finished or finished < started)
+    if not started or db.get_meta(HANDLED_KEY) == started:
+        return False
+    return not finished or finished < started
 
 
 def reschedule_interrupted(db: DB, interval_s: float) -> bool:
@@ -44,8 +47,9 @@ def reschedule_interrupted(db: DB, interval_s: float) -> bool:
     from datetime import timedelta
     resume = datetime.now(timezone.utc) + timedelta(seconds=RESUME_AFTER_SEC)
     db.set_meta(NEXT_RUN_KEY, resume.isoformat(timespec="seconds"))
-    # mark the killed run as handled so it isn't rescheduled again on the next boot
-    db.set_meta(FINISHED_KEY, db.get_meta(LAST_RUN_KEY))
+    # mark the killed run as handled so it isn't rescheduled again on the next boot.
+    # Not via FINISHED_KEY: that drives the /run cooldown and /stats "last run".
+    db.set_meta(HANDLED_KEY, db.get_meta(LAST_RUN_KEY))
     return True
 
 
@@ -71,7 +75,8 @@ def _scheduler(settings: Settings) -> None:
     announced = None
     while True:
         # re-evaluated every minute: a manual /run moves the next slot back
-        wait = _seconds_until_next(db, interval_s, 0) + jitter
+        # jitter spreads the regular cadence; a one-off resume slot runs on time
+        wait = _seconds_until_next(db, interval_s, 0) + (0 if db.get_meta(NEXT_RUN_KEY) else jitter)
         if wait > 60:
             if announced is None or abs(announced - wait) > 600:
                 log.info("next scheduled run in %.0f min", wait / 60)

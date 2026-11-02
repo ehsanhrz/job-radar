@@ -652,7 +652,8 @@ def test_old_indeed_rows_cleaned_once(tmp_path):
 def test_kariyer_disabled_bayt_removed_jobicy_terms():
     assert CFG["extra_sources"]["kariyer"]["enabled"] is False
     assert all("bayt" not in t.get("sites", []) for t in CFG["targets"])
-    assert "c#" not in CFG["extra_sources"]["remote_boards"]["search_terms"]
+    rb = CFG["extra_sources"]["remote_boards"]
+    assert "c#" in rb["search_terms"] and rb["skip_terms"]["jobicy"] == ["c#"]   # c# kept for the others
 
 
 @pytest.mark.parametrize("text,lang", [
@@ -701,3 +702,108 @@ def test_us_locations_are_dropped_and_wwr_is_penalised():
     wwr = ev.evaluate(Job(site="wwr", **base))
     other = ev.evaluate(Job(site="remoteok", **base))
     assert other.score - wwr.score == 20 and "wwr -20" in wwr.reasons
+
+
+# ---------------- Codex review follow-ups ----------------
+def test_killed_run_does_not_fake_a_finish_and_cooldown_stays_off(db, tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from jobradar import bot
+    from jobradar.serve import FINISHED_KEY, LAST_RUN_KEY, reschedule_interrupted, run_was_interrupted
+    t = lambda **kw: (datetime.now(timezone.utc) - timedelta(**kw)).isoformat(timespec="seconds")
+    db.set_meta(FINISHED_KEY, t(hours=7)); db.set_meta(LAST_RUN_KEY, t(minutes=3))   # killed 3 min in
+    assert reschedule_interrupted(db, 6 * 3600) and not run_was_interrupted(db)
+    assert db.get_meta(FINISHED_KEY) == t(hours=7)       # no fake "finished 3 min ago"
+    started = []
+    monkeypatch.setattr(bot, "try_start_run", lambda s, background=True, **k: started.append(1) or True)
+    bot.handle_update(db, FakeTG(), _settings(tmp_path),
+                      {"message": {"from": {"id": 42}, "chat": {"id": 42}, "text": "/run"}}, allow_run=True)
+    assert started == [1]                                 # /run not blocked by a cooldown
+    db.set_meta(LAST_RUN_KEY, t(minutes=1))               # a NEW run gets killed later -> handled again
+    assert run_was_interrupted(db)
+
+
+def test_remote_boards_skip_terms_per_board():
+    from jobradar.collectors import remote_boards
+    seen = []
+
+    class S:
+        def get(self, url, params=None, headers=None, timeout=None):
+            seen.append((url.split("/")[2], (params or {}).get("q") or (params or {}).get("tag")
+                         or (params or {}).get("search")))
+
+            class R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"jobs": []}
+            return R()
+
+    cfg = {"extra_sources": {"remote_boards": {"enabled": True, "boards": ["himalayas", "jobicy"],
+                                               "search_terms": [".net", "c#"], "skip_terms": {"jobicy": ["C#"]}}}}
+    remote_boards.collect(cfg, session=S(), sleep_fn=lambda s: None)
+    assert ("jobicy.com", "c#") not in seen and any(h.startswith("himalayas") and q == "c#" for h, q in seen)
+    assert any(h.endswith("jobicy.com") and q == ".net" for h, q in seen)
+
+
+def test_spaced_turkish_onsite_form_is_penalised(ev):
+    v = ev.evaluate(job("Senior .NET Developer", "C# geliştirici, iş yerinde çalışma, İstanbul", site="kariyer"))
+    assert any("yerinde" in r for r in v.reasons)
+
+
+def test_kariyer_jobs_get_the_turkey_bonus(ev):
+    import gzip
+    from pathlib import Path
+    from jobradar.collectors import html_boards as hb
+    fix = Path(__file__).parent / "fixtures" / "kariyer_search.html.gz"
+    jobs = hb.parse_kariyer_list(gzip.decompress(fix.read_bytes()).decode("utf-8"))
+    assert jobs and all(j.target == "Turkey" for j in jobs)
+    scored = [ev.evaluate(j) for j in jobs]
+    scored = [v for v in scored if v.status != "filtered"]
+    assert scored and all(any(r.startswith("Turkey +") for r in v.reasons) for v in scored)
+
+
+def test_rescore_waits_for_a_running_run(db, tmp_path):
+    from jobradar import bot
+    tg = FakeTG()
+    upd = {"message": {"from": {"id": 42}, "chat": {"id": 42}, "text": "/rescore"}}
+    assert bot._run_lock.acquire(blocking=False)
+    try:
+        bot.handle_update(db, tg, _settings(tmp_path), upd)
+    finally:
+        bot._run_lock.release()
+    assert "in progress" in tg.sent[-1][0]
+    bot.handle_update(db, tg, _settings(tmp_path), upd)
+    assert "Rescored" in tg.sent[-1][0] and not bot._run_lock.locked()
+
+
+def test_split_message_respects_telegram_limit():
+    from jobradar.bot import split_message
+    lines = [f'• <a href="https://example.com/{"x" * 300}/{i}">Job {i}</a>' for i in range(40)]
+    chunks = split_message("\n".join(lines))
+    assert len(chunks) > 1 and all(len(c) <= 3900 for c in chunks)
+    assert "\n".join(chunks) == "\n".join(lines)                 # nothing lost, no line cut
+    assert split_message("short") == ["short"]
+
+
+def test_ats_keeps_low_jobs_within_ai_margin(tmp_path, monkeypatch):
+    """With ai.review_margin > 0 a borderline company-board job must still reach the AI."""
+    from jobradar import pipeline
+    from jobradar.collectors import ats
+    from jobradar.filters import Evaluator
+    captured = {}
+    monkeypatch.setattr(pipeline, "collect_all", lambda *a, **k: CollectResult())
+    monkeypatch.setattr(ats, "run_step", lambda db, cfg, res, keep: captured.setdefault("keep", keep) and CollectResult()
+                        or CollectResult())
+    cfg = {**CFG, "ai": {**CFG["ai"], "enabled": False, "review_margin": 15}}
+    ev = Evaluator(cfg)
+    border = job("Software Engineer", "We use C# and remote work", site="greenhouse", is_remote=True,
+                 location="Remote: Anywhere")
+    score = ev.evaluate(border).score
+    assert ev.min_score - 15 <= score < ev.min_score, score         # really borderline
+    settings = _settings(tmp_path)
+    settings.raw = cfg
+    pipeline.run_once(settings, dry_run=True, process_updates=False)
+    assert captured["keep"](border)
+    junk = job("Software Engineer", "PHP on-site hybrid", site="greenhouse", is_remote=True, location="Remote")
+    assert not captured["keep"](junk)

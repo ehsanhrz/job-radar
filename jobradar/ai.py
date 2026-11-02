@@ -284,15 +284,17 @@ def job_text(row: dict) -> str:
     return " ".join(str(row.get(k) or "") for k in ("title", "company", "location", "description"))
 
 
-def format_review(review_json: str | None) -> str | None:
+def format_review(review_json: str | None, text: str = "") -> str | None:
     rv = Review.from_json(review_json)
     if not rv:
         return None
     # model output is untrusted: escape it, or a stray "<" breaks Telegram's HTML parser
-    feasible = rv.feasible
-    if feasible == "no":  # reached you => its claimed restriction wasn't in the posting
-        feasible = "unclear (AI claim not found in posting)"
-    icon = {"yes": "✅", "no": "⛔"}.get(rv.feasible if rv.feasible != "no" else "", "❔")
+    feasible, icon = rv.feasible, {"yes": "✅", "no": "⛔"}.get(rv.feasible, "❔")
+    if feasible == "no":
+        if text and evidence_is_real(rv.evidence, text):   # only reaches you with veto_infeasible off
+            feasible = f"no: “{html.escape(rv.evidence[:120])}”"
+        else:
+            feasible, icon = "unclear (AI claim not found in posting)", "❔"
     line = f"🤖 <b>{rv.fit}/10</b> · {html.escape(rv.reason)} · {icon} Iran-remote {feasible}"
     if rv.us_company == "yes":  # only reaches you when veto_us_company is off
         line += f"\n🇺🇸 US company{' · ' + html.escape(rv.hq) if rv.hq else ''}: OFAC applies"

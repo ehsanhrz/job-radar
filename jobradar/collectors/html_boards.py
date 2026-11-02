@@ -161,7 +161,7 @@ def parse_kariyer_list(html: str, today: date | None = None) -> list[Job]:
             location=", ".join(x for x in (city, work_model) if x) or None,
             is_remote=kariyer_remote_flag(work_model),
             date_posted=_kariyer_age(_text(card.select_one('[data-test="ad-date"]')), today),
-            target="Kariyer.net",
+            target="Turkey",   # so scoring.target_bonus.Turkey applies like LinkedIn/Indeed Turkey
         ))
     return jobs
 

@@ -155,12 +155,15 @@ def collect(cfg: dict, session: requests.Session | None = None, sleep_fn=time.sl
     session = session or requests.Session()
     terms = rcfg.get("search_terms") or [".net"]
     pages = int(rcfg.get("pages", 1))
+    skip = {b: {t.lower() for t in ts or []} for b, ts in (rcfg.get("skip_terms") or {}).items()}
     for board in rcfg.get("boards") or list(BOARDS):
         fetch = BOARDS.get(board)
         if not fetch:
             log.warning("unknown remote board %r (known: %s)", board, ", ".join(BOARDS))
             continue
         for term in terms:
+            if term.lower() in skip.get(board, ()):
+                continue
             try:
                 jobs = fetch(session, term, pages)
             except Exception as e:  # noqa: BLE001 - one board failing must not stop the run

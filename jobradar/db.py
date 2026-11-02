@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS ats_companies (
     last_kept      INTEGER,                -- of those, remote + relevant title
     failures       INTEGER NOT NULL DEFAULT 0,
     disabled       TEXT,                   -- NULL = watched; otherwise the reason
+    empty_checks   INTEGER NOT NULL DEFAULT 0, -- checks in a row with nothing relevant
     PRIMARY KEY (ats, slug)
 );
 """
@@ -100,6 +101,9 @@ class DB:
         for name, ddl in (("keyword_score", "INTEGER"), ("ai_review", "TEXT"), ("ai_status", "TEXT")):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {ddl}")
+        ats_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(ats_companies)")}
+        if ats_cols and "empty_checks" not in ats_cols:
+            self.conn.execute("ALTER TABLE ats_companies ADD COLUMN empty_checks INTEGER NOT NULL DEFAULT 0")
         # v0.4: Indeed jobs used to be stored with their indeed.com link. Forget the unsent
         # ones so they can come back with the company's direct link (dedupe would block them).
         self.conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")

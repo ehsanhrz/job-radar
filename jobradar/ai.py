@@ -37,6 +37,12 @@ Return ONLY a JSON object, no markdown, with exactly these keys:
   "evidence": string,             // if feasible is "no": copy the EXACT sentence from the posting
                                   // that rules him out, character for character, in the posting's
                                   // ORIGINAL language (never translate it). Otherwise "".
+  "us_company": "yes" | "no" | "unclear",
+                                  // is the HIRING company headquartered in the United States, or owned
+                                  // by a US parent? Use the posting AND what you reliably know about
+                                  // well-known companies. "unclear" if you don't know. Recruiters and
+                                  // job platforms: judge the end client if named, else "unclear".
+  "hq": string,                   // where the company is headquartered, e.g. "USA (San Francisco)"; "" if unknown
   "reason": string,               // max 15 words, why this fit score
   "flags": [string]               // max 3 short red flags (missing skills, language, location...), may be empty
 }
@@ -56,6 +62,8 @@ class Review:
     reason: str
     flags: list[str] = field(default_factory=list)
     evidence: str = ""
+    us_company: str = "unclear"
+    hq: str = ""
 
     def to_json(self) -> str:
         return json.dumps(self.__dict__, ensure_ascii=False)
@@ -65,9 +73,15 @@ class Review:
         if not s:
             return None
         try:
-            return Review(**json.loads(s))
+            d = json.loads(s)
+            return Review(**{k: v for k, v in d.items() if k in Review.__dataclass_fields__})
         except Exception:  # noqa: BLE001
             return None
+
+
+def _tri(v) -> str:
+    v = str(v if v is not None else "unclear").strip().lower()
+    return v if v in ("yes", "no", "unclear") else "unclear"
 
 
 def parse_review(text: str) -> Review | None:
@@ -96,6 +110,8 @@ def parse_review(text: str) -> Review | None:
         reason=str(d.get("reason") or "")[:160],
         flags=[str(f)[:60] for f in flags][:3],
         evidence=str(d.get("evidence") or "")[:300],
+        us_company=_tri(d.get("us_company")),
+        hq=str(d.get("hq") or "")[:60],
     )
 
 
@@ -256,6 +272,9 @@ def apply_review(keyword_score: int, review: Review | None, cfg: dict,
     if (acfg.get("veto_infeasible", True) and review.feasible == "no"
             and evidence_is_real(review.evidence, job_text)):
         return final, "ai: not feasible from Iran"
+    # OFAC: US companies can't hire someone in Iran, whatever the posting says
+    if acfg.get("veto_us_company", True) and review.us_company == "yes":
+        return final, f"ai: US company{f' ({review.hq})' if review.hq else ''}"
     if review.fit <= int(acfg.get("veto_fit_at_or_below", 2)):
         return final, "ai: poor fit"
     return final, None
@@ -275,6 +294,10 @@ def format_review(review_json: str | None) -> str | None:
         feasible = "unclear (AI claim not found in posting)"
     icon = {"yes": "✅", "no": "⛔"}.get(rv.feasible if rv.feasible != "no" else "", "❔")
     line = f"🤖 <b>{rv.fit}/10</b> · {html.escape(rv.reason)} · {icon} Iran-remote {feasible}"
+    if rv.us_company == "yes":  # only reaches you when veto_us_company is off
+        line += f"\n🇺🇸 US company{' · ' + html.escape(rv.hq) if rv.hq else ''}: OFAC applies"
+    elif rv.hq:
+        line += f"\n🏢 HQ: {html.escape(rv.hq)}"
     if rv.flags:
         line += "\n⚠️ " + html.escape("; ".join(rv.flags))
     return line

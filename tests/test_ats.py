@@ -261,3 +261,51 @@ def test_upgrade_on_existing_database(tmp_path):
                         session=Session({}), sleep_fn=lambda s: None).jobs == []
     row = db2.conn.execute("SELECT * FROM ats_companies").fetchone()
     assert (row["ats"], row["slug"]) == ("lever", "oldco") and row["failures"] == 1   # 404 counted, not fatal
+
+
+# ---------------- PR #13: daily re-check, dead boards, North America ----------------
+def test_company_is_rechecked_at_most_once_per_interval(tmp_path):
+    db = DB(tmp_path / "i.db")
+    _seed(db, ("greenhouse", "acmepay"))
+    sess = Session({"boards/acmepay": Resp(200, GH)})
+    ats.watch(db, CFG, keep=EV.title_ok, session=sess, sleep_fn=lambda s: None)
+    ats.watch(db, CFG, keep=EV.title_ok, session=sess, sleep_fn=lambda s: None)
+    assert len(sess.calls) == 1                                     # second run: not due yet
+    db.conn.execute("UPDATE ats_companies SET last_checked='2026-01-01T00:00:00+00:00'")
+    ats.watch(db, CFG, keep=EV.title_ok, session=sess, sleep_fn=lambda s: None)
+    assert len(sess.calls) == 2
+
+
+def test_board_with_nothing_relevant_is_disabled(tmp_path):
+    db = DB(tmp_path / "e.db")
+    _seed(db, ("greenhouse", "defenseco"), ("greenhouse", "acmepay"))
+    junk = {"jobs": [{"title": "Mechanical Engineer", "absolute_url": f"https://x/{i}",
+                      "location": {"name": "Remote"}} for i in range(5)]}
+    sess = Session({"boards/defenseco": Resp(200, junk), "boards/acmepay": Resp(200, GH)})
+    for _ in range(3):
+        db.conn.execute("UPDATE ats_companies SET last_checked=NULL")
+        ats.watch(db, CFG, keep=EV.title_ok, session=sess, sleep_fn=lambda s: None)
+    rows = {r["slug"]: r for r in db.conn.execute("SELECT * FROM ats_companies")}
+    assert rows["defenseco"]["disabled"] == "nothing relevant in 3 checks"
+    assert rows["acmepay"]["disabled"] is None and rows["acmepay"]["empty_checks"] == 0
+
+
+def test_north_american_board_counts_as_us():
+    board = {"jobs": [{"title": f"Engineer {i}", "absolute_url": f"https://x/{i}", "location": {"name": loc}}
+                      for i, loc in enumerate(["Remote - US", "Toronto, Canada", "Remote (North America)",
+                                               "London, UK", "Remote - Americas"])]}
+    assert ats.looks_us_based(ats.parse_greenhouse(board, "naco", None))     # 4/5 >= 0.6
+
+
+def test_old_ats_table_gets_empty_checks_column(tmp_path):
+    path = tmp_path / "old2.db"
+    db = DB(path)
+    db.conn.execute("DROP TABLE ats_companies")
+    db.conn.execute("""CREATE TABLE ats_companies (ats TEXT NOT NULL, slug TEXT NOT NULL, company TEXT,
+        discovered_at TEXT NOT NULL, discovered_via TEXT, last_checked TEXT, last_found INTEGER,
+        last_kept INTEGER, failures INTEGER NOT NULL DEFAULT 0, disabled TEXT, PRIMARY KEY (ats, slug))""")
+    db.conn.execute("INSERT INTO ats_companies (ats, slug, discovered_at) VALUES ('lever','oldco','x')")
+    db.conn.commit()
+    db.conn.close()
+    db2 = DB(path)
+    assert db2.conn.execute("SELECT empty_checks FROM ats_companies").fetchone()[0] == 0

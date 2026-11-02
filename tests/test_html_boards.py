@@ -134,11 +134,28 @@ def test_collect_fetches_details_selectively():
     assert detail_calls and not (set(detail_calls) & onsite)
 
 
-def test_collect_blocked_site_is_skipped():
+def test_collect_blocked_site_is_skipped(monkeypatch):
+    monkeypatch.setattr(hb, "RETRY_BLOCKED_AFTER", (0, 0))
     sess = FakeSession({"https://j/1": (403, "Forbidden")})
     cfg = {"extra_sources": {"jaabz": {"enabled": True, "list_urls": ["https://j/1", "https://j/2"]}}}
     res = hb.collect(cfg, session=sess, sleep_fn=lambda s: None)
-    assert res.health["jaabz"].errors == 1 and sess.calls == ["https://j/1"]
+    # retried once, then the whole site is skipped for the run (j/2 never requested)
+    assert res.health["jaabz"].errors == 1 and sess.calls == ["https://j/1", "https://j/1"]
+
+
+def test_blocked_once_then_ok_is_retried(monkeypatch):
+    monkeypatch.setattr(hb, "RETRY_BLOCKED_AFTER", (0, 0))
+
+    class Flaky:
+        calls = 0
+
+        def get(self, url, headers=None, timeout=None):
+            Flaky.calls += 1
+            status = 403 if Flaky.calls == 1 else 200
+            return type("R", (), {"status_code": status, "content": b"<html>ok</html>",
+                                  "text": "<html>ok</html>", "raise_for_status": lambda self: None})()
+
+    assert hb._get(Flaky(), "https://j/x") == "<html>ok</html>" and Flaky.calls == 2
 
 
 def test_kariyer_net_in_title_is_not_dotnet():

@@ -48,11 +48,17 @@ def make_session(bcfg: dict | None = None):
     return requests.Session()
 
 
-def _get(session, url: str) -> str:
+RETRY_BLOCKED_AFTER = (4.0, 9.0)  # one retry after a short pause; occasional 403s are transient
+
+
+def _get(session, url: str, retry_blocked: bool = True) -> str:
     impersonating = type(session).__module__.startswith("curl_cffi")
     # an impersonating session must keep the browser's own headers (UA must match the fingerprint)
     headers = {"Accept-Language": HEADERS["Accept-Language"]} if impersonating else HEADERS
     r = session.get(url, headers=headers, timeout=30)
+    if r.status_code in BLOCK_STATUSES and retry_blocked and RETRY_BLOCKED_AFTER:
+        time.sleep(random.uniform(*RETRY_BLOCKED_AFTER))
+        r = session.get(url, headers=headers, timeout=30)
     if r.status_code in BLOCK_STATUSES:
         raise Blocked(f"HTTP {r.status_code} (blocked)")
     r.raise_for_status()

@@ -80,6 +80,8 @@ class Evaluator:
         self.foreign_language_penalty = int(s.get("foreign_language_penalty", 0))
         self.fresh_bonus = int(s.get("fresh_bonus", 0))
         self.target_bonus = {k: int(v) for k, v in (s.get("target_bonus") or {}).items()}
+        # per-source adjustment, e.g. a board that is mostly US companies
+        self.site_bonus = {k: int(v) for k, v in (s.get("site_bonus") or {}).items()}
         self.min_score = int(s.get("min_score", 30))
 
     def title_ok(self, job: Job) -> bool:
@@ -151,6 +153,10 @@ class Evaluator:
             b = self.target_bonus[job.target]
             score += b
             reasons.append(f"{job.target} {b:+d}")
+        if job.site in self.site_bonus:
+            b = self.site_bonus[job.site]
+            score += b
+            reasons.append(f"{job.site} {b:+d}")
 
         status = "queued" if score >= self.min_score else "low"
         return Verdict(status, score, reasons)

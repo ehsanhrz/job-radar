@@ -807,3 +807,9 @@ def test_ats_keeps_low_jobs_within_ai_margin(tmp_path, monkeypatch):
     assert captured["keep"](border)
     junk = job("Software Engineer", "PHP on-site hybrid", site="greenhouse", is_remote=True, location="Remote")
     assert not captured["keep"](junk)
+
+
+def test_review_margin_has_one_default():
+    from jobradar.pipeline import DEFAULT_REVIEW_MARGIN, review_margin
+    assert review_margin({}) == review_margin({"ai": {}}) == DEFAULT_REVIEW_MARGIN == 10
+    assert review_margin({"ai": {"review_margin": 0}}) == 0     # an explicit 0 stays 0

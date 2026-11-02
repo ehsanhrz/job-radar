@@ -61,6 +61,16 @@ def watchdog(db: DB, result: CollectResult, cfg: dict, tg: Telegram | None) -> l
     return messages
 
 
+DEFAULT_REVIEW_MARGIN = 10
+
+
+def review_margin(cfg: dict) -> int:
+    """How far below min_score the AI may still review (and promote) a job.
+    One definition, so the ATS pre-filter and the AI step can never disagree."""
+    v = (cfg.get("ai") or {}).get("review_margin")
+    return DEFAULT_REVIEW_MARGIN if v is None else int(v)
+
+
 def ai_review_step(db: DB, reviewer: AIReviewer, cfg: dict) -> dict[str, int]:
     """Second opinion on jobs that passed the keyword filter. Never raises."""
     out = {"reviewed": 0, "vetoed": 0, "promoted": 0}
@@ -71,7 +81,7 @@ def ai_review_step(db: DB, reviewer: AIReviewer, cfg: dict) -> dict[str, int]:
         return out
     acfg = cfg.get("ai") or {}
     min_score = int((cfg.get("scoring") or {}).get("min_score", 30))
-    margin = int(acfg.get("review_margin", 10))
+    margin = review_margin(cfg)
     for row in db.ai_candidates(min_score - margin, int(acfg.get("max_reviews_per_run", 30))):
         if not reviewer.enabled:  # circuit breaker tripped mid-run
             break
@@ -161,7 +171,7 @@ def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = 
     # company boards found in those jobs (and earlier ones), checked directly; never breaks the run
     from .collectors import ats
     # keep only postings that could be sent: queued, or low but within the AI review margin
-    ai_floor = evaluator.min_score - int((cfg.get("ai") or {}).get("review_margin", 0) or 0)
+    ai_floor = evaluator.min_score - review_margin(cfg)
 
     def ats_keep(job) -> bool:
         v = evaluator.evaluate(job)

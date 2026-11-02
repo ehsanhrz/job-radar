@@ -160,9 +160,14 @@ def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = 
                          want_details=lambda job: not db.seen(job) and evaluator.title_ok(job))
     # company boards found in those jobs (and earlier ones), checked directly; never breaks the run
     from .collectors import ats
-    # keep only postings that would actually be sent (full filters + score), not just a title match
-    result.merge(ats.run_step(db, cfg, result,
-                              keep=lambda j: evaluator.evaluate(j).status == "queued"))
+    # keep only postings that could be sent: queued, or low but within the AI review margin
+    ai_floor = evaluator.min_score - int((cfg.get("ai") or {}).get("review_margin", 0) or 0)
+
+    def ats_keep(job) -> bool:
+        v = evaluator.evaluate(job)
+        return v.status == "queued" or (v.status == "low" and v.score >= ai_floor)
+
+    result.merge(ats.run_step(db, cfg, result, keep=ats_keep))
     record_health(db, result)
     counts = ingest(db, evaluator, result)
     reviewer = AIReviewer(cfg)

@@ -134,8 +134,8 @@ def format_job(row: sqlite3.Row | dict) -> str:
     if r.get("salary"):
         lines.append(f"💰 {e(r['salary'])}")
     lines.append(f"⭐ <b>{r.get('score', 0)}</b>  <i>{e(', '.join(reasons[:6]))}</i>")
-    from .ai import format_review  # local import: avoid a cycle
-    ai_line = format_review(r.get("ai_review"))
+    from .ai import format_review, job_text  # local import: avoid a cycle
+    ai_line = format_review(r.get("ai_review"), job_text(r))
     if ai_line:
         lines.append(ai_line)
     posted = f" · posted {e(r['date_posted'])}" if r.get("date_posted") else ""

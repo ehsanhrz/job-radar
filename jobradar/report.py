@@ -135,6 +135,23 @@ def build_report(db: DB, cfg: dict, period: str | None = "24h") -> dict:
     filtered_reasons = Counter(_reason_group(r["filter_reason"]) for r in q(
         f"SELECT filter_reason FROM jobs WHERE status='filtered' AND {period_jobs}", (since_s,)))
 
+    # Stage counts come from the jobs themselves (their status NOW), not from per-run
+    # counters taken before AI review: so new = filtered + ai_vetoed + low + queued + reached_you.
+    outcome = Counter()
+    for r in q(f"SELECT status, filter_reason FROM jobs WHERE {period_jobs}", (since_s,)):
+        st = r["status"]
+        if st == "filtered":
+            outcome["ai_vetoed" if (r["filter_reason"] or "").startswith("ai:") else "filtered"] += 1
+        elif st in ("low", "queued"):
+            outcome[st] += 1
+        else:                       # sent / applied / skipped / saved
+            outcome["reached_you"] += 1
+    funnel = Counter({"found": funnel["found"], "duplicate": funnel["duplicate"],
+                      "new": sum(outcome.values()),
+                      **{k: outcome[k] for k in ("filtered", "ai_vetoed", "low", "queued", "reached_you")},
+                      # every job sent in the period, including ones that were queued before it
+                      "sent": q("SELECT COUNT(*) c FROM jobs WHERE sent_at >= ?", (since_s,)).fetchone()["c"]})
+
     report = {
         "report": {
             "generated_at": _iso(datetime.now(timezone.utc)),

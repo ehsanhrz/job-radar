@@ -315,3 +315,11 @@ def test_card_shows_hq_and_us_warning():
 def test_old_review_json_with_unknown_keys_loads():
     rv = Review.from_json(json.dumps({"fit": 6, "feasible": "yes", "reason": "r", "flags": [], "future": 1}))
     assert rv.us_company == "unclear" and rv.hq == ""
+
+
+def test_card_shows_a_verified_no_when_veto_is_off():
+    text = "Senior C# role. Candidates must be based in Germany. Remote within Germany only."
+    rv = Review(8, "no", "ok", evidence="Candidates must be based in Germany.").to_json()
+    assert "Candidates must be based in Germany" in format_review(rv, text)
+    assert "not found in posting" in format_review(rv, "Fully remote, worldwide.")
+    assert "not found in posting" in format_review(rv)                # no text: can't verify

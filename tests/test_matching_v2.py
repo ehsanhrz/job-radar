@@ -345,6 +345,6 @@ def test_review_queue_lists_v2_low_and_borderline_jobs(tmp_path):
     sent = []
     tg = type("TG", (), {"send": lambda self, body, keyboard=None: sent.append(body)})()
     settings = Settings({}, "t", "42", None, [], tmp_path / "review.db")
-    handle_update(db, tg, settings, {"message": {"chat": {"id": 42}, "text": "/review 2"}})
+    handle_update(db, tg, settings, {"message": {"from": {"id": 42}, "chat": {"id": 42}, "text": "/review 2"}})
     assert len(sent) == 1 and sent[0].count("Explain:") == 2
 

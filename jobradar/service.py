@@ -9,11 +9,12 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from .config import Settings
-from .db import DB
+from .db import DB, now
 
 log = logging.getLogger(__name__)
 
 LAST_RUN_KEY = "last_run_at"
+NEXT_RUN_KEY = "next_run_at"
 
 
 def seconds_until_next_run(database: DB, interval_seconds: float, jitter_seconds: float,
@@ -24,7 +25,19 @@ def seconds_until_next_run(database: DB, interval_seconds: float, jitter_seconds
     from that durable value prevents a deploy or service restart from immediately
     repeating a run that just started or completed.  Jitter remains part of the
     regular cadence but never shortens a restart delay below five minutes.
+
+    A ``next_run_at`` override is a one-off slot (used to resume a run killed by a
+    redeploy) and takes precedence over the regular cadence until it is consumed.
     """
+    override = database.get_meta(NEXT_RUN_KEY)
+    if override:
+        try:
+            when = datetime.fromisoformat(override)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            return max(60.0, (when - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError):
+            log.warning("invalid %s value %r; using the regular schedule", NEXT_RUN_KEY, override)
     last = database.get_meta(LAST_RUN_KEY)
     if not last:
         return 0.0
@@ -38,6 +51,30 @@ def seconds_until_next_run(database: DB, interval_seconds: float, jitter_seconds
     elapsed = (datetime.now(timezone.utc) - started.astimezone(timezone.utc)).total_seconds()
     remaining = interval_seconds - elapsed + jitter(-jitter_seconds, jitter_seconds)
     return max(300.0, remaining)
+
+
+def resume_interrupted_if_due(database: DB, interval_seconds: float) -> bool:
+    """Schedule a near-term retry for a previous run that never finished.
+
+    The legacy ``serve`` scheduler does this at boot.  A run that started only
+    seconds ago may still be alive in another process, so the service path waits
+    for the resume grace period before claiming the run was killed.
+    """
+    from .serve import RESUME_AFTER_SEC, reschedule_interrupted
+
+    last = database.get_meta(LAST_RUN_KEY)
+    if not last:
+        return False
+    try:
+        started = datetime.fromisoformat(last)
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return False
+    age = (datetime.now(timezone.utc) - started.astimezone(timezone.utc)).total_seconds()
+    if age < RESUME_AFTER_SEC:
+        return False
+    return reschedule_interrupted(database, interval_seconds)
 
 
 class RunCoordinator:
@@ -59,6 +96,20 @@ class RunCoordinator:
         except Exception:  # noqa: BLE001
             log.exception("scheduled run failed")
             return False
+        finally:
+            self._lock.release()
+
+    def exclusive(self, action: Callable[[], object]) -> bool:
+        """Run a short, non-pipeline action under the same lock as real runs.
+
+        Returns False when a run is already active, so callers can tell the user
+        to retry instead of sending duplicate messages.
+        """
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            action()
+            return True
         finally:
             self._lock.release()
 
@@ -128,6 +179,8 @@ def run_service(settings: Settings, stop_event: threading.Event | None = None,
     interval = float(schedule.get("interval_hours", 6)) * 3600
     jitter_seconds = float(schedule.get("jitter_minutes", 30)) * 60
     wait_fn = wait or stop.wait
+    if resume_interrupted_if_due(database, interval):
+        log.info("previous run was interrupted (restart/redeploy): running again soon")
     try:
         while not stop.is_set():
             delay = seconds_until_next_run(database, interval, jitter_seconds, jitter)
@@ -137,6 +190,11 @@ def run_service(settings: Settings, stop_event: threading.Event | None = None,
                     break
             if stop.is_set():
                 break
+            # Record the scheduled attempt in the same database connection that
+            # computes the next delay.  run_once records this too for CLI and
+            # manual runs; doing it here makes the scheduler's restart contract
+            # hold even if setup fails before run_once reaches its own write.
+            database.set_meta(LAST_RUN_KEY, now())
             coordinator.execute_scheduled()
     finally:
         stop.set()

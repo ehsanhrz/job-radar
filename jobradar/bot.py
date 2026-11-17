@@ -4,12 +4,13 @@
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
-import html
+import math
 import threading
 import time
-import math
+from datetime import datetime, timezone
 
 from .config import Settings
 from .db import DB
@@ -31,9 +32,11 @@ HELP = (
 )
 
 _run_lock = threading.Lock()
+RUN_COOLDOWN_MIN = 30
 APPLIED_PAGE_SIZE = 10
 REVIEW_PAGE_SIZE = 10
 TELEGRAM_SAFE_LENGTH = 3900
+TG_LIMIT = TELEGRAM_SAFE_LENGTH  # Telegram rejects messages over 4096 characters
 
 
 def _stats_text(db: DB) -> str:
@@ -59,6 +62,75 @@ def _list_text(db: DB, status: str) -> str:
     for r in rows:
         lines.append(f'• <a href="{e(r["url"])}">{e(r["title"])}</a> — {e(r["company"] or "?")}')
     return "\n".join(lines)
+
+
+def _companies_text(db: DB) -> str:
+    from .collectors.ats import summary
+    sm = summary(db)
+    if not sm["total"]:
+        return "No company boards discovered yet. They appear as jobs with Greenhouse/Lever/Ashby/Workable links come in."
+    off = ", ".join(f"{n} {e(r)}" for r, n in sm["disabled"].items()) or "none"
+    lines = [f"🏢 <b>Company boards</b>: watching {sm['watched']} of {sm['total']} (skipped: {off})"]
+    for c in sm["top"][:20]:
+        seen = "not checked yet" if c["last_checked"] is None else f"{c['last_kept'] or 0}/{c['last_found'] or 0} relevant"
+        lines.append(f"• {e(c['company'] or c['slug'])} <i>({c['ats']})</i>: {seen}")
+    return "\n".join(lines)
+
+
+def split_message(text: str, limit: int = TG_LIMIT) -> list[str]:
+    """Split on line breaks so HTML tags (one per line here) are never cut in half."""
+    chunks, cur = [], ""
+    for line in text.split("\n"):
+        while len(line) > limit:            # a single monster line: hard cut (rare)
+            chunks.append(line[:limit])
+            line = line[limit:]
+        if cur and len(cur) + 1 + len(line) > limit:
+            chunks.append(cur)
+            cur = line
+        else:
+            cur = f"{cur}\n{line}" if cur else line
+    if cur:
+        chunks.append(cur)
+    return chunks or [""]
+
+
+def send_long(tg: Telegram, text: str) -> None:
+    for chunk in split_message(text):
+        tg.send(chunk)
+
+
+def _vetoed_text(db: DB) -> str:
+    rows = db.conn.execute(
+        "SELECT * FROM jobs WHERE status='filtered' AND filter_reason LIKE 'ai:%' "
+        "ORDER BY updated_at DESC LIMIT 15").fetchall()
+    if not rows:
+        return "The AI hasn't dropped anything."
+    lines = [f"<b>AI-dropped ({len(rows)})</b>"]
+    for r in rows:
+        rv = json.loads(r["ai_review"] or "{}")
+        why = rv.get("evidence") or rv.get("reason") or ""
+        lines.append(f'• <a href="{e(r["url"])}">{e(r["title"])}</a> ({e(r["company"] or "?")})\n'
+                     f'   {e(r["filter_reason"])}: <i>{e(why[:120])}</i>')
+    return "\n".join(lines)
+
+
+def is_authorized(upd: dict, settings: Settings) -> bool:
+    """Only YOUR chat, and only YOU in it. Everything else is dropped silently:
+    no reply, no button answer, nothing logged but the update id."""
+    cq = upd.get("callback_query")
+    if cq:
+        chat, sender = (cq.get("message") or {}).get("chat") or {}, cq.get("from") or {}
+    elif upd.get("message"):
+        chat, sender = upd["message"].get("chat") or {}, upd["message"].get("from") or {}
+    else:
+        return False  # edited messages, channel posts, joins, inline queries...: never handled
+    allowed_chat = str(settings.telegram_chat_id)
+    if not allowed_chat or str(chat.get("id")) != allowed_chat:
+        return False
+    sender_id = str(sender.get("id"))
+    allowed_users = settings.allowed_user_ids or frozenset({allowed_chat})
+    # private chat: chat id == your user id. In a group, only TELEGRAM_ALLOWED_USER_IDS may act.
+    return sender_id in allowed_users
 
 
 def _applied_page(db: DB, page: int) -> tuple[list[str], list[list[dict]] | None]:
@@ -126,9 +198,35 @@ def _review_page(db: DB, page: int) -> tuple[str, list[list[dict]] | None]:
     return "\n".join(lines), [nav] if nav else None
 
 
+def _rescore(db: DB, tg: Telegram, settings: Settings, coordinator=None) -> None:
+    """Rescore unsent jobs and send new matches, never overlapping a running scrape."""
+    def work() -> None:
+        from .pipeline import rescore_all, send_queued
+        out = rescore_all(db, settings.raw)
+        sent = send_queued(db, tg, settings.raw, dry_run=False)
+        tg.send(f"♻️ Rescored: {out['changed']} changed · sent {sent} · "
+                f"still queued {out['now_queued'] - sent}")
+
+    if coordinator is not None:
+        # service mode: share the coordinator's lock so a scheduled run cannot
+        # send the same queued job at the same time.
+        if not coordinator.exclusive(work):
+            tg.send("A run is in progress. Send /rescore again when it's done.")
+        return
+    if not _run_lock.acquire(blocking=False):
+        tg.send("A run is in progress. Send /rescore again when it's done.")
+        return
+    try:
+        work()
+    finally:
+        _run_lock.release()
+
+
 def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run: bool = False,
                   coordinator=None) -> None:
-    allowed = str(settings.telegram_chat_id)
+    if not is_authorized(upd, settings):
+        log.debug("ignored update %s (not from the owner's chat)", upd.get("update_id"))
+        return
 
     cq = upd.get("callback_query")
     if cq:
@@ -172,10 +270,10 @@ def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run
         return
 
     msg = upd.get("message") or {}
-    if str((msg.get("chat") or {}).get("id")) != allowed:
-        return
     text = (msg.get("text") or "").strip()
-    text = text.split("@", 1)[0] if text.startswith("/") else text
+    if text.startswith("/"):  # "/report@my_bot 7d" -> "/report 7d"
+        head, _, rest = text.partition(" ")
+        text = (head.split("@")[0] + (" " + rest if rest else "")).strip()
     if text in ("/start", "/help"):
         tg.send(HELP)
     elif text == "/stats":
@@ -199,17 +297,41 @@ def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run
             page = 0
         body, buttons = _review_page(db, page)
         tg.send(body, buttons)
-    elif text == "/run":
+    elif text == "/report" or text.startswith("/report "):
+        from .report import caption, report_json
+        arg = text.split(maxsplit=1)[1] if " " in text else "24h"
+        try:
+            name, data = report_json(db, settings.raw, arg)
+            tg.send_document(name, data, caption(json.loads(data)))
+        except ValueError as err:
+            tg.send(f"⚠️ {e(str(err))}")
+        except TelegramError as err:
+            log.error("report send failed: %s", err)
+            tg.send("⚠️ Couldn't send the report file, check the logs.")
+    elif text == "/companies":
+        send_long(tg, _companies_text(db))
+    elif text == "/vetoed":
+        send_long(tg, _vetoed_text(db))
+    elif text == "/rescore":
+        _rescore(db, tg, settings, coordinator)
+    elif text in ("/run", "/run force"):
         if coordinator is not None:
             tg.send("🛰 Starting a run…" if coordinator.start_manual() else "A run is already in progress.")
         elif not allow_run:
             tg.send("/run only works when the bot is running in always-on mode.")
-        elif text == "/run" and mins is not None and mins < RUN_COOLDOWN_MIN:
-            tg.send(f"Last run finished {mins:.0f} min ago. Send <code>/run force</code> to run anyway.")
-        elif try_start_run(settings, background=True):
-            tg.send("🛰 Starting a run…")
         else:
-            tg.send("A run is already in progress.")
+            # cooldown counts from the last run that actually FINISHED, so a run
+            # killed by a redeploy doesn't block /run
+            last = db.get_meta("last_run_finished_at")
+            mins = None
+            if last:
+                mins = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() / 60
+            if text == "/run" and mins is not None and mins < RUN_COOLDOWN_MIN:
+                tg.send(f"Last run finished {mins:.0f} min ago. Send <code>/run force</code> to run anyway.")
+            elif try_start_run(settings, background=True):
+                tg.send("🛰 Starting a run…")
+            else:
+                tg.send("A run is already in progress.")
 
 
 def try_start_run(settings: Settings, notify_busy: bool = True, background: bool = True,
@@ -260,7 +382,17 @@ def run_bot(settings: Settings, coordinator=None, stop_event: threading.Event | 
             ready_event: threading.Event | None = None) -> None:
     db = DB(settings.db_path)
     tg = Telegram(settings.telegram_token, settings.telegram_chat_id, settings.telegram_proxy)
-    log.info("bot online as @%s", tg.me().get("username"))
+    # don't crash-loop the container if Telegram is unreachable at boot
+    while stop_event is None or not stop_event.is_set():
+        try:
+            log.info("bot online as @%s", tg.me().get("username"))
+            break
+        except TelegramError as err:
+            log.warning("Telegram not reachable yet: %s (retrying in 30s)", err)
+            if stop_event:
+                stop_event.wait(30)
+            else:
+                time.sleep(30)
     if ready_event:
         ready_event.set()
     while stop_event is None or not stop_event.is_set():

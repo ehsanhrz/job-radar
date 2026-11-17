@@ -10,25 +10,25 @@
 
 ## Main design constraints
 
-### Evaluator is the policy center
+### V2 matching has explicit policy stages
 
-`filters.Evaluator` combines title gates, hard exclusion, keyword scoring, freshness, employment hints, and the queued/low decision (`filters.py:37-103`). This is not a “god class” by line count, but it owns all policy and receives an untyped raw config dictionary. A new geographic rule, AI outcome, or role-family distinction would expand it and raise the chance that a matching rule silently changes another outcome. The solution is a small explicit evaluation result and separately testable policy stages, not a broad framework.
+`matching.py` now has a typed `TechnicalEvaluation` and independently testable role classification, requirement extraction, skill matching, seniority, and scoring stages. `filters.Evaluator` remains as legacy compatibility code. Geographic policy still lacks the same explicit result contract and should not be folded into V2 technical fit.
 
 ### Raw string statuses are the state model
 
-Statuses are comments and strings. `set_status(job_id, status)` does not validate allowed values or transitions (`db.py:106-113`). A small enum/transition map and DB constraint would prevent typos and make application tracking distinct from match evaluation. The current statuses are adequate for a prototype, but the matching workflow has no review state.
+Statuses are comments and strings. `set_status(job_id, status)` does not validate allowed values or transitions. V2 adds a `low` review path exposed through `/review`, while application statuses remain distinct from evaluation fields. A small enum/transition map and DB constraint would still prevent typos.
 
 ### Persistence is a repository mixed with schema setup
 
-`DB` owns connection, schema bootstrapping, serialization, queries, and commits (`db.py:60-170`). This is tolerable at this size. Schema changes have no explicit version or migration record, which complicates future additive evaluation fields and testing from old DB files.
+`DB` owns connection, schema bootstrapping, serialization, queries, and commits. This is tolerable at this size. V2 has safe additive column migration and tests against a copied old DB, but schema changes still have no explicit ordered migration record.
 
 ### Pipeline uses orchestration plus side effects
 
 `run_once` coordinates all stages and sends notifications. `ingest` writes per job; notification/outbox is not separated. A proper delivery record/outbox is only justified if duplicate/lost notifications become a material operational issue; avoid premature service decomposition.
 
-### Deployment has process-level coordination gaps
+### Production service coordinates in-process work
 
-Compose shares SQLite between worker and bot. `/run` starts a daemon thread but its lock is process-local. There is no distributed lock, lease, or idempotent source-run key. Starting another run can duplicate external load and race cross-board dedupe.
+`service` starts one poller and uses `RunCoordinator` for scheduled and manual work; a concurrent manual request is rejected rather than queued. The `meta.last_run_at` value survives deployment restart and drives the next schedule. Separate external CLI processes still have no distributed lock or idempotent source-run key.
 
 ## Coupling and dependency direction
 
@@ -36,10 +36,10 @@ The call graph is acyclic in the inspected modules. `bot` imports pipeline lazil
 
 ## Design recommendations
 
-1. Introduce typed `TechnicalEvaluation`, `GeographicEvaluation`, and `PriorityDecision` records only when the product rules are agreed. Keep a deterministic policy engine separate from optional AI extraction.
+1. Add `GeographicEvaluation` and `PriorityDecision` only when their product rules are agreed. Keep the existing deterministic V2 technical policy separate from optional AI extraction.
 2. Make source adapters return normalized records plus explicit source call outcomes (success-empty, partial, failure), preserving original payload facts where needed.
 3. Keep SQLite for the single-user workload, add explicit versioned additive migrations and unique constraints only after defining dedupe semantics.
 4. Add an outbox or safe send marker protocol only if delivery duplication is observed; first add metrics and failure-injection tests.
-5. Add cross-process run coordination before adding parallel collectors or more workers.
+5. Add cross-process run coordination before adding parallel collectors, a second service process, or more workers.
 
 No recommendation here implies rewriting the application. The current deployment and data scale do not justify distributed services or a message broker based on available evidence.

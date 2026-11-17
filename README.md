@@ -118,9 +118,13 @@ them ~24h), so a once-a-morning run is enough. Jobs that didn't fit in
 ## 3. Production deployment (one container)
 
 Build one image and run one Python process. It starts one Telegram polling loop
-and one coordinated scheduler; the first search runs automatically at startup.
-The scheduler uses `schedule.interval_hours` and `schedule.jitter_minutes` from
-`config.yaml`. Create `.env` with `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and
+and one coordinated scheduler. A fresh database runs its first search at startup;
+later service restarts use SQLite's persisted last-run time and wait for the
+remaining configured schedule instead of immediately searching again. If a run
+was killed mid-execution (for example by a redeploy), a one-off slot schedules a
+retry about five minutes after restart. The scheduler uses
+`schedule.interval_hours` and `schedule.jitter_minutes` from `config.yaml`.
+Create `.env` with `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and
 any optional proxy settings before starting. Secrets are supplied at runtime,
 not copied into the image.
 
@@ -158,7 +162,13 @@ production does not require Compose.
 | `/stats`   | counts by status, source health, top filter reasons |
 | `/saved`   | your ⭐ jobs |
 | `/applied [page]` | applied job list with total and pagination (text and inline buttons) |
-| `/run`     | scrape now (always-on mode only) |
+| `/review [page]`  | possible/low-confidence V2 matches with a score and explanation id |
+| `/vetoed`  | jobs an AI review dropped, with the quoted reason |
+| `/rescore` | re-apply current rules to unsent jobs and send new matches |
+| `/report [24h\|7d\|all]` | full JSON report (runs, sources, issues, jobs) as a file |
+| `/companies` | discovered company ATS boards and their watch status |
+| `/run`     | scrape now (always-on mode only; cooldown is 30 min after a finished run) |
+| `/run force` | scrape now even inside the cooldown |
 
 Every job message has **✅ Applied / ⏭ Skip / ⭐ Save**, plus **↩️ Undo** after you tap one.
 

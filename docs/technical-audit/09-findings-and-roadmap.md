@@ -18,37 +18,36 @@ No confirmed P0 issue was found in the inspected source. No destructive testing 
 - **Complexity:** Medium. **Dependencies:** agree on enum semantics and evidence retention.
 - **Validation:** tests for worldwide, region/country restriction, hybrid/onsite, probation, sponsorship, contractor, explicit Iran restriction, and unknown behavior.
 
-### F-02 — Hard filters discard before review and matching is title-dominated
+### F-02 — Geographic hard filters remain separate from technical review
 
 - **Severity:** High · **Confidence:** High · **Category:** Matching quality
-- **Evidence:** evaluator immediately returns filtered on title include/exclude/hard-exclude (`filters.py:61-75`); patterns are in `config.yaml:77-105`. Local DB has 930/963 filtered jobs with `title: no include match`.
-- **Impact:** A relevant backend role with a nonstandard title, or wording that merely mentions a restriction, cannot reach a more informed review. Candidate systems/domain expertise are not represented.
-- **Likelihood:** High. **Recommendation:** Separate broad discovery eligibility from final rejection; retain evidence and run role/skill analysis before hard rejection except for explicit, verified disqualifiers.
-- **Complexity:** Medium. **Dependencies:** candidate profile and rule ownership.
-- **Validation:** regression set based on anonymized current filtered examples and explicit negation/mandatory-vs-preferred cases.
+- **Evidence:** production ingestion uses `MatchingEngine`, which evaluates descriptions and no longer uses title inclusion as the V2 admission gate. Existing geographic/work-authorization policy remains in the legacy filter policy and produces a technical-independent exclusion.
+- **Impact:** nonstandard technical titles can now reach V2, but a geographic exclusion is still an immediate delivery decision and lacks a dedicated evidence/review model.
+- **Likelihood:** Medium. **Recommendation:** model geographic eligibility separately with source evidence and an unknown/review state.
+- **Complexity:** Medium. **Validation:** explicit region/work-authorization/unknown cases kept separate from technical score tests.
 
-### F-04 — Score is an unbounded keyword total, not a 0–100 fit/priority score
+### F-04 — Geographic fit and application priority remain outside V2
 
 - **Severity:** High · **Confidence:** High · **Category:** Ranking
-- **Evidence:** all matching weights are added (`filters.py:76-100`), `min_score=30` (`config.yaml:108`), no clamp/normalization exists. DB snapshot has sent max 118 and average 92.6.
-- **Impact:** Score comparisons are hard to interpret; title keyword repetition can outweigh location feasibility and posting freshness. Ranking is not calibrated to interview probability.
-- **Likelihood:** High. **Recommendation:** Separate fit, feasibility, and priority, bound each score, publish deterministic factor explanations, and treat explicit ineligibility as a delivery veto.
-- **Complexity:** Medium. **Validation:** monotonicity, bounds, eligibility precedence, and pairwise ranking tests.
+- **Evidence:** `TechnicalEvaluation` is bounded 0–100 and persists score factors, but it deliberately excludes geographic feasibility and application priority.
+- **Impact:** a high score means technical fit only. It must not be read as interview probability or evidence that a remote role can hire the candidate.
+- **Likelihood:** High for international vacancies. **Recommendation:** add evidence-backed geographic and priority stages in a separate milestone.
+- **Complexity:** Medium. **Validation:** retain score-bound tests and add eligibility-precedence tests when that model exists.
 
 ## P2 — Medium
 
-### F-03 — AI evaluation is absent from the current pipeline
+### F-03 — `ai.py` is dormant legacy capability, not V2 semantic matching
 
 - **Severity:** Medium · **Confidence:** High · **Category:** Product expectation / matching
-- **Evidence:** runtime dependencies lack an AI client; no AI code exists under `jobradar/`; README roadmap marks LLM pass as future (`README.md:123-128`). Current flow is `run_once → Evaluator.evaluate` (`pipeline.py:95-98`).
-- **Impact:** No semantic responsibility analysis, requirement classification, evidence-grounded geographic reasoning, or explanation beyond keyword matches.
-- **Likelihood:** Certain relative to current code. **Recommendation:** Keep product documentation aligned with runtime; if AI is later added, validate structured output, attach source evidence, and keep deterministic eligibility safeguards outside model vetoes.
-- **Complexity:** Low for documentation; Medium/High for a reliable evaluator. **Validation:** verify docs match runtime; schema/adversarial tests before enabling model calls.
+- **Evidence:** `jobradar/ai.py` contains an OpenAI-compatible reviewer; `pipeline.run_once` constructs V2 `MatchingEngine` and records the AI path as disabled for V2 rather than calling it.
+- **Impact:** V2 has deterministic responsibility/requirement classification and explanation, but does not provide semantic LLM extraction. Re-enabling the old reviewer would require a deliberate integration and security review.
+- **Likelihood:** Certain. **Recommendation:** keep documentation explicit about this boundary and retain deterministic eligibility safeguards outside model discretion.
+- **Complexity:** Low for documentation; Medium/High for a safe optional model integration. **Validation:** provider-contract, schema/adversarial, and evidence-veto tests before activation.
 
 ### F-05 — Cross-process dedupe is not atomic
 
 - **Severity:** Medium · **Confidence:** High · **Category:** Data integrity
-- **Evidence:** `seen()` query precedes `INSERT OR IGNORE`; fingerprint index is non-unique (`db.py:35, 70-92`). Compose worker and bot share DB, and bot `/run` can execute concurrently with worker (`docker-compose.yml:3-20`, `bot.py:86-103`).
+- **Evidence:** `seen()` query precedes `INSERT OR IGNORE`; fingerprint index is non-unique. `RunCoordinator` removes normal service overlap, but separate CLI processes remain outside its lock.
 - **Impact:** Same job under different URLs can be inserted twice during overlapping runs; SQLite primary key only prevents identical cleaned URLs. No such collision was established in the available snapshot.
 - **Likelihood:** Medium under normal single-worker schedule, high if `/run` overlaps. **Recommendation:** define fingerprint collision policy, use atomic unique enforcement or transaction/lock, and coordinate runs across processes.
 - **Complexity:** Medium. **Validation:** two-connection concurrent ingest test and collision test.
@@ -88,7 +87,7 @@ No confirmed P0 issue was found in the inspected source. No destructive testing 
 ### F-11 — No versioned DB migrations or retention policy
 
 - **Severity:** Medium · **Confidence:** High · **Category:** Operations/data lifecycle
-- **Evidence:** schema is created inline with `IF NOT EXISTS` (`db.py:10-67`), no version table; every source run persists indefinitely.
+- **Evidence:** schema is created inline and V2 uses safe additive column checks, but there is no ordered migration/version table; every source run persists indefinitely.
 - **Impact:** future schema changes can be difficult to order/rollback; `source_runs` grows without bound.
 - **Likelihood:** Medium as long as the service runs. **Recommendation:** add ordered additive migrations and documented retention/backup policy before expanding schema.
 - **Complexity:** Medium. **Validation:** migrate a copy of the supplied DB and verify row/status preservation.
@@ -115,19 +114,19 @@ No confirmed P0 issue was found in the inspected source. No destructive testing 
 
 ### Phase 0 — Correct claims and retain evidence
 
-- Document that AI is absent and remote means source metadata/keyword only.
+- Document V2 deterministic evaluation, its separate geographic boundary, and `ai.py` as dormant legacy capability.
 - Add structured source failure records and filter evidence before changing thresholds.
 - Acceptance: each dropped/queued job has an inspectable deterministic reason; source partial failures are visible.
 
 ### Phase 1 — Separate suitability from eligibility
 
-- Define technical fit, geographic feasibility, eligibility, and application-priority contracts.
+- Define geographic feasibility, eligibility, and application-priority contracts that complement the implemented technical-fit contract.
 - Preserve `unknown` in a manual review queue; explicit ineligible jobs remain searchable but are not delivered.
 - Acceptance: no unknown is silently labeled eligible, no explicit ineligible job enters the high-priority queue, and AWS/Kubernetes are role/requirement-contextual.
 
 ### Phase 2 — Persistence and lifecycle hardening
 
-- Introduce versioned additive migration; atomic duplicate policy; run coordination; safe delivery state.
+- Add ordered migration tracking, atomic duplicate policy, and safer delivery state; run coordination and persisted restart scheduling are implemented.
 - Acceptance: existing records and application statuses survive migration; concurrent same-fingerprint ingest produces one canonical record; send failure windows are tested.
 
 ### Phase 3 — Semantic evaluation only if needed

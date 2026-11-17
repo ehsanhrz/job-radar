@@ -28,7 +28,7 @@ There is no `.github/` directory or checked-in CI workflow. `ai.py` uses `reques
 
 The dependency direction is simple: `pipeline` imports collectors, config, DB, evaluator, and Telegram; collectors construct `Job`; DB persists `Job`; bot invokes pipeline and DB. This small graph is easy to navigate. The `filters.Evaluator` is the main business decision point, but its inputs are a broad `Job` record and a raw config dictionary, and its output (`Verdict`) mixes filtering and ranking without a richer domain decision model.
 
-Graphify on the current checkout produced 191 nodes and 469 edges across 10 communities. Its call graph has `run_once()` calling `collect_all`, `record_health`, `Evaluator`, `ingest`, `send_queued`, and `watchdog`; it shows Telegram and bot in a single connected community. This matches source inspection: the architecture is a direct call chain, not a message-broker or service architecture. Graphify did not model deployment/YAML/ZIP artifacts, and its package version warning means graph output should be treated as navigational evidence.
+Graphify on the earlier audit checkout produced 191 nodes and 469 edges across 10 communities. The graph predates V2 and is navigation evidence only; current source inspection shows `run_once()` calling collection, health persistence, V2 ingestion, delivery, and watchdog stages. It does not model deployment/YAML artifacts, and its package version warning means graph output should be treated cautiously.
 
 ## Config and deployment
 

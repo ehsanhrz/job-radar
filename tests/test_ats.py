@@ -215,7 +215,12 @@ def test_pipeline_discovers_watches_and_sends(tmp_path, monkeypatch):
                       description="Apply at https://boards.greenhouse.io/acmepay/jobs/1")]
     found.call("hn", found=1)
     monkeypatch.setattr(pipeline, "collect_all", lambda cfg, proxies, want_details=None: found)
-    monkeypatch.setattr(ats.requests, "Session", lambda: Session({"boards/acmepay": Resp(200, GH)}))
+    # Keep the fixture fresh: a hard-coded posting date eventually trips max_age_days.
+    from copy import deepcopy
+    from datetime import datetime, timezone
+    fresh_gh = deepcopy(GH)
+    fresh_gh["jobs"][0]["updated_at"] = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(ats.requests, "Session", lambda: Session({"boards/acmepay": Resp(200, fresh_gh)}))
     monkeypatch.setattr(ats.time, "sleep", lambda s: None)
 
     class TG:

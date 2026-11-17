@@ -208,7 +208,7 @@ def main() -> None:
     settings = load_settings(args.config)
     {
         "run": cmd_run, "loop": cmd_loop, "bot": cmd_bot, "service": cmd_service, "stats": cmd_stats,
-        "rescore": cmd_rescore, "explain": cmd_explain,
+        "rescore": cmd_rescore, "explain": cmd_explain, "probe": cmd_probe, "report": cmd_report,
         "test-telegram": cmd_test_telegram, "chat-id": cmd_chat_id,
     }[args.cmd](args, settings)
 

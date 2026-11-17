@@ -6,8 +6,8 @@
 - Historical local DB evidence includes LinkedIn's 429 “blocked: use a proxy” on 2 of 17 calls. It still found 260 results in that run. This is a real partial failure; current watchdog tests only the all-zero case (`tests/test_pipeline.py:213-230`).
 - JobSpy uses `hours_old=72`; evaluator separately filters dates older than 14 days. When posted date is missing, freshness limit does not reject the job (`config.yaml:10-14, 74`).
 - Arbeitnow paginates up to three pages, follows provider-provided `links.next`, uses a 30-second timeout, and stops on first error. No retry or rate-limit backoff exists (`arbeitnow.py:45-75`).
-- `run_once` performs collectors, database work, and Telegram sends sequentially. No queue backpressure or parallel AI evaluation exists. At current local data volume there is no evidence of a performance bottleneck; no benchmark or timing breakdown exists.
-- Compose runs worker and bot separately against the same SQLite file. The bot process can start an extra `/run` concurrently with the scheduled worker. SQLite WAL helps reader/writer coexistence, but application dedupe is not atomic and fingerprint lacks a unique constraint.
+- `run_once` performs collectors, database work, and Telegram sends sequentially. No queue backpressure or parallel evaluation exists. At current local data volume there is no evidence of a performance bottleneck; no benchmark or timing breakdown exists.
+- Production `service` runs the poller and scheduler in one process. `RunCoordinator` rejects overlapping manual and scheduled work, and `meta.last_run_at` prevents a normal restart from immediately repeating a run. Separate CLI processes remain outside that in-process lock.
 - A successful Telegram send followed by a failed DB write can create duplicate notifications on a later run. A user update exception is logged and the offset advances, potentially losing the action.
 - No graceful cancellation/stop handling is visible in the loops; scheduled `loop` sleeps then starts another run, and bot long polling catches Telegram exceptions and sleeps 10s.
 
@@ -21,7 +21,7 @@ No runtime measurements were collected. Search calls are the likely latency driv
 
 **Risks and unverified items:**
 
-- Job descriptions and tags are external, untrusted content. No AI prompt exists, so prompt injection is not an active current vulnerability. If an LLM is added, descriptions must be isolated as data and not trusted as instructions.
+- Job descriptions and tags are external, untrusted content. `ai.py` has an optional legacy prompt that explicitly treats the posting as untrusted data. V2 does not call an LLM. If the legacy reviewer is reenabled, prompt-injection tests and a stricter evidence policy are still warranted.
 - Arbeitnow `links.next` is consumed as a URL without checking that the host remains `www.arbeitnow.com` (`arbeitnow.py:56-71`). The initial URL is fixed HTTPS. A hostile/compromised API response could cause requests to follow another URL; SSRF is a potential trust-boundary risk, not demonstrated exploitability.
 - `script.py` makes an HTTP(S) GET to a hardcoded Jaabz URL with a timeout and fixed User-Agent. It is not part of app runtime and does not validate redirects/response content type.
 - The chat-id setup command prints IDs to terminal; Telegram token is embedded in API URL as required by Bot API and is not logged by this code. Logging of full exception text may include provider response details; no explicit redaction layer exists.

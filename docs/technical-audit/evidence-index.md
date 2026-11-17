@@ -9,13 +9,13 @@ Claims are based on the audited checkout. Line numbers refer to source paths in 
 | Current collectors | `jobradar/collectors/__init__.py:7-10`; `jobradar/collectors/jobspy_collector.py:75-143`; `jobradar/collectors/arbeitnow.py:45-75` |
 | Discovery normalization | `jobradar/models.py:22-57`; `jobspy_collector.py:55-72`; `arbeitnow.py:19-42` |
 | Source health | `jobradar/collectors/base.py:9-36`; `jobradar/pipeline.py:29-60` |
-| Pipeline ordering | `jobradar/pipeline.py:15-120` — `ingest`, `watchdog`, `send_queued`, `run_once` |
-| Hard filters and scoring | `jobradar/filters.py:37-105`; `config.yaml:74-145` |
-| No AI evaluator | `requirements.txt`; `jobradar/`; README roadmap `README.md:123-128` |
+| Pipeline ordering and V2 delivery | `jobradar/pipeline.py`; `jobradar/service.py` |
+| V2 matching and candidate evidence | `jobradar/matching.py`; `candidate_profile.yaml`; `config.yaml` `matching` section |
+| Optional legacy AI reviewer | `jobradar/ai.py`; `jobradar/pipeline.py` (V2 path intentionally does not invoke it) |
 | Geographic fields and remote flag | `jobradar/models.py:22-36`; `jobspy_collector.py:60-72`; `arbeitnow.py:31-42`; `filters.py:86-90`; `db.py:11-34` |
 | DB schema, indexes, dedupe, states | `jobradar/db.py:10-170`; `jobradar/models.py:39-52` |
 | Telegram delivery and status callbacks | `jobradar/pipeline.py:63-80`; `jobradar/telegram.py:26-127`; `jobradar/bot.py:50-93` |
-| Worker/bot concurrency | `docker-compose.yml:3-20`; `jobradar/bot.py:86-103`; `jobradar/__main__.py:27-42` |
+| Service scheduling and coordination | `jobradar/service.py`; `jobradar/pipeline.py` persisted run metadata |
 | Test inventory | `tests/test_pipeline.py:58-263`; `tests/conftest.py`; `requirements-dev.txt` |
 | Deployment | `Dockerfile:1-18`; `docker-compose.yml:1-20` |
 | Scraping tool vs active source | `script.py:1-20` is a Jaabz HTML downloader but is not imported by `jobradar/collectors/__init__.py` |

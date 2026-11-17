@@ -168,6 +168,18 @@ class DB:
             (*statuses, limit),
         ).fetchall()
 
+    def count_by_status(self, status: str) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS count FROM jobs WHERE status = ?", (status,)).fetchone()
+        return int(row["count"])
+
+    def page_by_status(self, status: str, limit: int, offset: int = 0) -> list[sqlite3.Row]:
+        if limit < 1 or offset < 0:
+            raise ValueError("limit must be positive and offset non-negative")
+        return self.conn.execute(
+            "SELECT * FROM jobs WHERE status = ? ORDER BY updated_at DESC, id ASC LIMIT ? OFFSET ?",
+            (status, limit, offset),
+        ).fetchall()
+
     def update_evaluation(self, job_id: str, status: str, score: int, reasons: list[str],
                           filter_reason: str | None) -> None:
         self.conn.execute(

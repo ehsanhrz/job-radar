@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import logging
 import random
+import signal
 import sys
+import threading
 import time
 
 from .config import load_settings
@@ -46,9 +48,22 @@ def cmd_bot(args, settings) -> None:
     run_bot(settings)
 
 
-def cmd_serve(args, settings) -> None:
-    from .serve import serve
-    serve(settings)
+def cmd_service(args, settings) -> None:
+    from .service import run_service
+    stop = threading.Event()
+    previous = {}
+
+    def request_stop(signum, frame):
+        logging.getLogger("service").info("received signal %s; shutting down", signum)
+        stop.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        previous[sig] = signal.signal(sig, request_stop)
+    try:
+        run_service(settings, stop)
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 def cmd_stats(args, settings) -> None:
@@ -163,8 +178,8 @@ def main() -> None:
     r.add_argument("--dry-run", action="store_true", help="print matches instead of sending")
     r.add_argument("--no-updates", action="store_true", help="don't process pending button taps")
     sub.add_parser("loop", help="run forever on the schedule in config.yaml")
-    sub.add_parser("serve", help="bot + scheduler in one process (single-container hosting)")
-    sub.add_parser("bot", help="always-on Telegram bot only (buttons + commands)")
+    sub.add_parser("bot", help="always-on Telegram bot (buttons + commands)")
+    sub.add_parser("service", help="run Telegram polling and automatic scheduler together")
     sub.add_parser("stats", help="print counts and source health")
     sub.add_parser("rescore", help="re-apply filters after editing config.yaml")
     sub.add_parser("test-telegram", help="send a test message")
@@ -178,8 +193,8 @@ def main() -> None:
     _setup_logging(args.verbose)
     settings = load_settings(args.config)
     {
-        "run": cmd_run, "loop": cmd_loop, "serve": cmd_serve, "bot": cmd_bot, "stats": cmd_stats,
-        "rescore": cmd_rescore, "test-telegram": cmd_test_telegram, "probe": cmd_probe, "report": cmd_report, "chat-id": cmd_chat_id,
+        "run": cmd_run, "loop": cmd_loop, "bot": cmd_bot, "service": cmd_service, "stats": cmd_stats,
+        "rescore": cmd_rescore, "test-telegram": cmd_test_telegram, "chat-id": cmd_chat_id,
     }[args.cmd](args, settings)
 
 

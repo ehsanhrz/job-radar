@@ -1,0 +1,141 @@
+# 09 — Findings and roadmap
+
+Severity describes business/technical impact. Confidence describes evidence quality. Complexity is a rough engineering estimate, not a commitment.
+
+## P0 — Critical
+
+No confirmed P0 issue was found in the inspected source. No destructive testing or production deployment inspection was performed.
+
+## P1 — High
+
+### F-01 — Remote state is not geographic eligibility
+
+- **Severity:** High · **Confidence:** High · **Category:** Product correctness
+- **Evidence:** `Job.is_remote` is a nullable bool (`jobradar/models.py:30`); collectors coerce source flags to bool (`jobspy_collector.py:68`, `arbeitnow.py:39`); evaluator rewards any remote flag/text (`filters.py:86-90`). No country allowlist or eligibility enum exists in `db.py:11-34`.
+- **Impact:** US-only, EU-only, and globally available remote jobs can be treated alike; an excellent technical keyword score can enter Telegram despite unknown hiring-country/payroll compatibility.
+- **Likelihood:** High for international roles.
+- **Recommendation:** Add evidence-backed arrangement/eligibility fields and separate manual review from high-priority delivery; do not infer Iran policy absent evidence.
+- **Complexity:** Medium. **Dependencies:** agree on enum semantics and evidence retention.
+- **Validation:** tests for worldwide, region/country restriction, hybrid/onsite, probation, sponsorship, contractor, explicit Iran restriction, and unknown behavior.
+
+### F-02 — Hard filters discard before review and matching is title-dominated
+
+- **Severity:** High · **Confidence:** High · **Category:** Matching quality
+- **Evidence:** evaluator immediately returns filtered on title include/exclude/hard-exclude (`filters.py:61-75`); patterns are in `config.yaml:77-105`. Local DB has 930/963 filtered jobs with `title: no include match`.
+- **Impact:** A relevant backend role with a nonstandard title, or wording that merely mentions a restriction, cannot reach a more informed review. Candidate systems/domain expertise are not represented.
+- **Likelihood:** High. **Recommendation:** Separate broad discovery eligibility from final rejection; retain evidence and run role/skill analysis before hard rejection except for explicit, verified disqualifiers.
+- **Complexity:** Medium. **Dependencies:** candidate profile and rule ownership.
+- **Validation:** regression set based on anonymized current filtered examples and explicit negation/mandatory-vs-preferred cases.
+
+### F-04 — Score is an unbounded keyword total, not a 0–100 fit/priority score
+
+- **Severity:** High · **Confidence:** High · **Category:** Ranking
+- **Evidence:** all matching weights are added (`filters.py:76-100`), `min_score=30` (`config.yaml:108`), no clamp/normalization exists. DB snapshot has sent max 118 and average 92.6.
+- **Impact:** Score comparisons are hard to interpret; title keyword repetition can outweigh location feasibility and posting freshness. Ranking is not calibrated to interview probability.
+- **Likelihood:** High. **Recommendation:** Separate fit, feasibility, and priority, bound each score, publish deterministic factor explanations, and treat explicit ineligibility as a delivery veto.
+- **Complexity:** Medium. **Validation:** monotonicity, bounds, eligibility precedence, and pairwise ranking tests.
+
+## P2 — Medium
+
+### F-03 — AI evaluation is absent from the current pipeline
+
+- **Severity:** Medium · **Confidence:** High · **Category:** Product expectation / matching
+- **Evidence:** runtime dependencies lack an AI client; no AI code exists under `jobradar/`; README roadmap marks LLM pass as future (`README.md:123-128`). Current flow is `run_once → Evaluator.evaluate` (`pipeline.py:95-98`).
+- **Impact:** No semantic responsibility analysis, requirement classification, evidence-grounded geographic reasoning, or explanation beyond keyword matches.
+- **Likelihood:** Certain relative to current code. **Recommendation:** Keep product documentation aligned with runtime; if AI is later added, validate structured output, attach source evidence, and keep deterministic eligibility safeguards outside model vetoes.
+- **Complexity:** Low for documentation; Medium/High for a reliable evaluator. **Validation:** verify docs match runtime; schema/adversarial tests before enabling model calls.
+
+### F-05 — Cross-process dedupe is not atomic
+
+- **Severity:** Medium · **Confidence:** High · **Category:** Data integrity
+- **Evidence:** `seen()` query precedes `INSERT OR IGNORE`; fingerprint index is non-unique (`db.py:35, 70-92`). Compose worker and bot share DB, and bot `/run` can execute concurrently with worker (`docker-compose.yml:3-20`, `bot.py:86-103`).
+- **Impact:** Same job under different URLs can be inserted twice during overlapping runs; SQLite primary key only prevents identical cleaned URLs. No such collision was established in the available snapshot.
+- **Likelihood:** Medium under normal single-worker schedule, high if `/run` overlaps. **Recommendation:** define fingerprint collision policy, use atomic unique enforcement or transaction/lock, and coordinate runs across processes.
+- **Complexity:** Medium. **Validation:** two-connection concurrent ingest test and collision test.
+
+### F-06 — Source health conflates empty, partial, and successful discovery
+
+- **Severity:** Medium · **Confidence:** High · **Category:** Reliability/observability
+- **Evidence:** `CollectResult` only tracks aggregate calls/found/errors (`collectors/base.py:9-36`); watchdog alerts only when all recent runs found zero (`pipeline.py:34-51`). Local source-run evidence records LinkedIn 2 errors over 17 calls while finding 260 jobs.
+- **Impact:** Partial 429 degradation can be missed by the all-zero alert. One run record per source hides which target/term failed.
+- **Likelihood:** Medium. **Recommendation:** persist per-call outcomes and durations; alert on error rate and partial failure, distinguish empty success from request/parser failure.
+- **Complexity:** Medium. **Validation:** partial-success/429 and malformed-empty tests.
+
+### F-07 — Notification state is not atomic with Telegram delivery
+
+- **Severity:** Medium · **Confidence:** High · **Category:** Reliability
+- **Evidence:** Telegram send precedes `mark_sent` (`pipeline.py:72-78`).
+- **Impact:** process/DB failure after remote send can cause a duplicate notification. There is no outbox/delivery attempt record.
+- **Likelihood:** Low to medium; no incident data available. **Recommendation:** add delivery attempt/idempotency tracking or accept duplicates explicitly and expose retry state.
+- **Complexity:** Medium. **Validation:** failure injection after Telegram acceptance and before DB commit.
+
+### F-09 — Remote metadata is lossy and no review path exists
+
+- **Severity:** Medium · **Confidence:** High · **Category:** Data model
+- **Evidence:** only bool/location/description retained (`models.py:22-36`, `db.py:11-34`); statuses are filtered/low/queued/sent/application states. Local snapshot has 28 missing descriptions.
+- **Impact:** source-level country lists and exact employment wording are not represented separately; unclear jobs are forced into accept/reject/low behavior.
+- **Likelihood:** High for listings with sparse board metadata. **Recommendation:** preserve original arrangement/location text and extracted evidence; add review queue separate from notification queue.
+- **Complexity:** Medium. **Validation:** collector normalization tests by source and migration/reevaluation tests.
+
+### F-10 — Source pagination URL is trusted
+
+- **Severity:** Medium · **Confidence:** Medium · **Category:** Security
+- **Evidence:** `arbeitnow.collect` passes provider `links.next` directly to `session.get` (`arbeitnow.py:56-71`).
+- **Impact:** A compromised or malformed API response could direct the worker to an unexpected host or internal network endpoint.
+- **Likelihood:** Low; requires hostile provider response or interception outside normal TLS trust. **Recommendation:** require HTTPS and allowlist the expected API host on every page URL; cap redirects/pages.
+- **Complexity:** Low. **Validation:** fake `links.next` host/redirect tests.
+
+### F-11 — No versioned DB migrations or retention policy
+
+- **Severity:** Medium · **Confidence:** High · **Category:** Operations/data lifecycle
+- **Evidence:** schema is created inline with `IF NOT EXISTS` (`db.py:10-67`), no version table; every source run persists indefinitely.
+- **Impact:** future schema changes can be difficult to order/rollback; `source_runs` grows without bound.
+- **Likelihood:** Medium as long as the service runs. **Recommendation:** add ordered additive migrations and documented retention/backup policy before expanding schema.
+- **Complexity:** Medium. **Validation:** migrate a copy of the supplied DB and verify row/status preservation.
+
+## P3 — Low
+
+### F-08 — Stored application state has unrestricted string transitions
+
+- **Severity:** Low · **Confidence:** High · **Category:** State integrity
+- **Evidence:** `DB.set_status` accepts arbitrary strings and `handle_update` forwards callback status (`db.py:106-113`, `bot.py:58-69`). No DB CHECK or transition map.
+- **Impact:** Unexpected callback data can create invalid states; metrics/UI silently omit unknown states.
+- **Likelihood:** Low for ordinary user behavior. **Recommendation:** allowlist statuses and valid transitions, constrain schema on new DB versions.
+- **Complexity:** Low. **Validation:** invalid status and transition tests.
+
+### F-12 — Runtime/build dependencies are not reproducibly locked
+
+- **Severity:** Low · **Confidence:** High · **Category:** Delivery/maintenance
+- **Evidence:** `requirements.txt` contains one exact pin and three ranges; Docker base is `python:3.12-slim`; no lockfile, CI, or vulnerability scan was found.
+- **Impact:** rebuilds may resolve different transitive versions and there is no automated test gate.
+- **Likelihood:** Medium over time. **Recommendation:** use a generated lock with hashes, automate tests/security review, and use a controlled base-image update cadence.
+- **Complexity:** Low/Medium. **Validation:** reproducible clean build and CI test run.
+
+## Roadmap and acceptance criteria
+
+### Phase 0 — Correct claims and retain evidence
+
+- Document that AI is absent and remote means source metadata/keyword only.
+- Add structured source failure records and filter evidence before changing thresholds.
+- Acceptance: each dropped/queued job has an inspectable deterministic reason; source partial failures are visible.
+
+### Phase 1 — Separate suitability from eligibility
+
+- Define technical fit, geographic feasibility, eligibility, and application-priority contracts.
+- Preserve `unknown` in a manual review queue; explicit ineligible jobs remain searchable but are not delivered.
+- Acceptance: no unknown is silently labeled eligible, no explicit ineligible job enters the high-priority queue, and AWS/Kubernetes are role/requirement-contextual.
+
+### Phase 2 — Persistence and lifecycle hardening
+
+- Introduce versioned additive migration; atomic duplicate policy; run coordination; safe delivery state.
+- Acceptance: existing records and application statuses survive migration; concurrent same-fingerprint ingest produces one canonical record; send failure windows are tested.
+
+### Phase 3 — Semantic evaluation only if needed
+
+- Add optional AI extraction/classification with schema validation, evidence citations, confidence, timeout/cost budget, prompt-injection defenses, and deterministic fallback.
+- Acceptance: invalid outputs are rejected; every nontrivial decision points to job text/source evidence; provider errors cannot mark jobs eligible.
+
+### Phase 4 — Operational quality
+
+- Add CI, source/stage metrics, structured logs, alerting, DB backup/retention documentation, container health checks and least-privilege runtime.
+- Acceptance: operator dashboard covers discovery through delivery; restore drill and clean image build are documented.

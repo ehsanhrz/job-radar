@@ -1,0 +1,10 @@
+# Optional local development convenience. Production can use `docker run`.
+services:
+  jobradar:
+    build: .
+    command: ["service"]
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+    restart: unless-stopped

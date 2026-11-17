@@ -6,9 +6,10 @@ from __future__ import annotations
 
 import json
 import logging
+import html
 import threading
 import time
-from datetime import datetime, timezone
+import math
 
 from .config import Settings
 from .db import DB
@@ -29,7 +30,8 @@ HELP = (
 )
 
 _run_lock = threading.Lock()
-RUN_COOLDOWN_MIN = 30
+APPLIED_PAGE_SIZE = 10
+TELEGRAM_SAFE_LENGTH = 3900
 
 
 def _stats_text(db: DB) -> str:
@@ -57,88 +59,65 @@ def _list_text(db: DB, status: str) -> str:
     return "\n".join(lines)
 
 
-def _companies_text(db: DB) -> str:
-    from .collectors.ats import summary
-    sm = summary(db)
-    if not sm["total"]:
-        return "No company boards discovered yet. They appear as jobs with Greenhouse/Lever/Ashby/Workable links come in."
-    off = ", ".join(f"{n} {e(r)}" for r, n in sm["disabled"].items()) or "none"
-    lines = [f"🏢 <b>Company boards</b>: watching {sm['watched']} of {sm['total']} (skipped: {off})"]
-    for c in sm["top"][:20]:
-        seen = "not checked yet" if c["last_checked"] is None else f"{c['last_kept'] or 0}/{c['last_found'] or 0} relevant"
-        lines.append(f"• {e(c['company'] or c['slug'])} <i>({c['ats']})</i>: {seen}")
-    return "\n".join(lines)
-
-
-TG_LIMIT = 3900  # Telegram rejects messages over 4096 characters
-
-
-def split_message(text: str, limit: int = TG_LIMIT) -> list[str]:
-    """Split on line breaks so HTML tags (one per line here) are never cut in half."""
-    chunks, cur = [], ""
-    for line in text.split("\n"):
-        while len(line) > limit:            # a single monster line: hard cut (rare)
-            chunks.append(line[:limit])
-            line = line[limit:]
-        if cur and len(cur) + 1 + len(line) > limit:
-            chunks.append(cur)
-            cur = line
-        else:
-            cur = f"{cur}\n{line}" if cur else line
-    if cur:
-        chunks.append(cur)
-    return chunks or [""]
-
-
-def send_long(tg: Telegram, text: str) -> None:
-    for chunk in split_message(text):
-        tg.send(chunk)
-
-
-def _vetoed_text(db: DB) -> str:
-    import json
-    rows = db.conn.execute(
-        "SELECT * FROM jobs WHERE status='filtered' AND filter_reason LIKE 'ai:%' "
-        "ORDER BY updated_at DESC LIMIT 15").fetchall()
+def _applied_page(db: DB, page: int) -> tuple[list[str], list[list[dict]] | None]:
+    total = db.count_by_status("applied")
+    pages = max(1, math.ceil(total / APPLIED_PAGE_SIZE))
+    if page < 1 or page > pages:
+        return [f"Applied jobs: {total}\nInvalid page {page}. Choose a page from 1 to {pages}."], None
+    rows = db.page_by_status("applied", APPLIED_PAGE_SIZE, (page - 1) * APPLIED_PAGE_SIZE)
+    start = (page - 1) * APPLIED_PAGE_SIZE + 1 if total else 0
+    end = min(page * APPLIED_PAGE_SIZE, total)
+    header = f"<b>Applied jobs: {total}</b>\nShowing {start}–{end} of {total}\nPage {page} of {pages}"
     if not rows:
-        return "The AI hasn't dropped anything."
-    lines = [f"<b>AI-dropped ({len(rows)})</b>"]
-    for r in rows:
-        rv = json.loads(r["ai_review"] or "{}")
-        why = rv.get("evidence") or rv.get("reason") or ""
-        lines.append(f'• <a href="{e(r["url"])}">{e(r["title"])}</a> ({e(r["company"] or "?")})\n'
-                     f'   {e(r["filter_reason"])}: <i>{e(why[:120])}</i>')
-    return "\n".join(lines)
+        return [header + "\n\nNo applied jobs yet."], None
+    blocks = [header]
+    for row in rows:
+        date_info = f"\n📅 Posted: {e(row['date_posted'])}" if row["date_posted"] else ""
+        applied_info = f"\n🕒 Updated: {e(row['updated_at'])}" if row["updated_at"] else ""
+        blocks.append(
+            f'\n\n<b>{e(row["title"])}</b>\n🏢 {e(row["company"] or "—")}\n'
+            f'📍 {e(row["location"] or "—")}{date_info}{applied_info}\n'
+            f'<a href="{html.escape(row["url"], quote=True)}">Open job</a>'
+        )
+    messages: list[str] = []
+    current = ""
+    for block in blocks:
+        if len(current) + len(block) > TELEGRAM_SAFE_LENGTH and current:
+            messages.append(current)
+            current = block.lstrip()
+        else:
+            current += block
+    if current:
+        messages.append(current)
+    buttons = None
+    if pages > 1:
+        nav = []
+        if page > 1:
+            nav.append({"text": "‹ Previous", "callback_data": f"ap:{page - 1}"})
+        if page < pages:
+            nav.append({"text": "Next ›", "callback_data": f"ap:{page + 1}"})
+        buttons = [nav]
+    return messages, buttons
 
 
-def is_authorized(upd: dict, settings: Settings) -> bool:
-    """Only YOUR chat, and only YOU in it. Everything else is dropped silently:
-    no reply, no button answer, nothing logged but the update id."""
-    cq = upd.get("callback_query")
-    if cq:
-        chat, sender = (cq.get("message") or {}).get("chat") or {}, cq.get("from") or {}
-    elif upd.get("message"):
-        chat, sender = upd["message"].get("chat") or {}, upd["message"].get("from") or {}
-    else:
-        return False  # edited messages, channel posts, joins, inline queries...: never handled
-    allowed_chat = str(settings.telegram_chat_id)
-    if not allowed_chat or str(chat.get("id")) != allowed_chat:
-        return False
-    sender_id = str(sender.get("id"))
-    allowed_users = settings.allowed_user_ids or frozenset({allowed_chat})
-    # private chat: chat id == your user id. In a group, only TELEGRAM_ALLOWED_USER_IDS may act.
-    return sender_id in allowed_users
-
-
-def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run: bool = False) -> None:
-    if not is_authorized(upd, settings):
-        log.debug("ignored update %s (not from the owner's chat)", upd.get("update_id"))
-        return
+def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run: bool = False,
+                  coordinator=None) -> None:
+    allowed = str(settings.telegram_chat_id)
 
     cq = upd.get("callback_query")
     if cq:
         data = cq.get("data") or ""
-        if data.startswith("st:"):
+        if data.startswith("ap:"):
+            try:
+                page = int(data.split(":", 1)[1])
+            except ValueError:
+                tg.answer_callback(cq["id"], "Invalid page")
+                return
+            texts, buttons = _applied_page(db, page)
+            for text in texts:
+                tg.send(text, buttons if text == texts[-1] else None)
+            tg.answer_callback(cq["id"])
+        elif data.startswith("st:"):
             _, status, job_id = data.split(":", 2)
             if db.get(job_id) is None:
                 log.warning("button for unknown job %s: DB was reset or another instance sent it", job_id)
@@ -158,54 +137,29 @@ def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run
         return
 
     msg = upd.get("message") or {}
+    if str((msg.get("chat") or {}).get("id")) != allowed:
+        return
     text = (msg.get("text") or "").strip()
-    if text.startswith("/"):  # "/report@my_bot 7d" -> "/report 7d"
-        head, _, rest = text.partition(" ")
-        text = (head.split("@")[0] + (" " + rest if rest else "")).strip()
+    text = text.split("@", 1)[0] if text.startswith("/") else text
     if text in ("/start", "/help"):
         tg.send(HELP)
     elif text == "/stats":
         tg.send(_stats_text(db))
     elif text == "/saved":
         tg.send(_list_text(db, "saved"))
-    elif text == "/applied":
-        tg.send(_list_text(db, "applied"))
-    elif text == "/report" or text.startswith("/report "):
-        from .report import build_report, caption, report_json
-        arg = text.split(maxsplit=1)[1] if " " in text else "24h"
+    elif text == "/applied" or text.startswith("/applied "):
+        arg = text.partition(" ")[2].strip()
         try:
-            name, data = report_json(db, settings.raw, arg)
-            rep = json.loads(data)
-            tg.send_document(name, data, caption(rep))
-        except ValueError as err:
-            tg.send(f"⚠️ {e(str(err))}")
-        except TelegramError as err:
-            log.error("report send failed: %s", err)
-            tg.send("⚠️ Couldn't send the report file, check the logs.")
-    elif text == "/companies":
-        send_long(tg, _companies_text(db))
-    elif text == "/vetoed":
-        send_long(tg, _vetoed_text(db))
-    elif text == "/rescore":
-        # same lock as runs: otherwise a run and /rescore can both send the same queued job
-        if not _run_lock.acquire(blocking=False):
-            tg.send("A run is in progress. Send /rescore again when it's done.")
-            return
-        try:
-            from .pipeline import rescore_all, send_queued
-            out = rescore_all(db, settings.raw)
-            sent = send_queued(db, tg, settings.raw, dry_run=False)
-        finally:
-            _run_lock.release()
-        tg.send(f"♻️ Rescored: {out['changed']} changed · sent {sent} · still queued {out['now_queued'] - sent}")
-    elif text in ("/run", "/run force"):
-        # cooldown counts from the last run that actually FINISHED, so a run killed
-        # by a redeploy doesn't block /run
-        last = db.get_meta("last_run_finished_at")
-        mins = None
-        if last:
-            mins = (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() / 60
-        if not allow_run:
+            page = int(arg) if arg else 1
+        except ValueError:
+            page = 0
+        texts, buttons = _applied_page(db, page)
+        for i, body in enumerate(texts):
+            tg.send(body, buttons if i == len(texts) - 1 else None)
+    elif text == "/run":
+        if coordinator is not None:
+            tg.send("🛰 Starting a run…" if coordinator.start_manual() else "A run is already in progress.")
+        elif not allow_run:
             tg.send("/run only works when the bot is running in always-on mode.")
         elif text == "/run" and mins is not None and mins < RUN_COOLDOWN_MIN:
             tg.send(f"Last run finished {mins:.0f} min ago. Send <code>/run force</code> to run anyway.")
@@ -259,27 +213,28 @@ def process_pending(db: DB, tg: Telegram, settings: Settings) -> int:
     return handled
 
 
-def run_bot(settings: Settings) -> None:
+def run_bot(settings: Settings, coordinator=None, stop_event: threading.Event | None = None,
+            ready_event: threading.Event | None = None) -> None:
     db = DB(settings.db_path)
     tg = Telegram(settings.telegram_token, settings.telegram_chat_id, settings.telegram_proxy)
-    while True:  # don't crash-loop the container if Telegram is unreachable at boot
-        try:
-            log.info("bot online as @%s", tg.me().get("username"))
-            break
-        except TelegramError as err:
-            log.warning("Telegram not reachable yet: %s (retrying in 30s)", err)
-            time.sleep(30)
-    while True:
+    log.info("bot online as @%s", tg.me().get("username"))
+    if ready_event:
+        ready_event.set()
+    while stop_event is None or not stop_event.is_set():
         offset = db.get_meta("tg_offset")
         try:
             updates = tg.get_updates(int(offset) if offset else None, timeout=50)
         except TelegramError as err:
             log.warning("polling error: %s (retrying in 10s)", err)
-            time.sleep(10)
+            if stop_event:
+                stop_event.wait(10)
+            else:
+                time.sleep(10)
             continue
         for upd in updates:
             try:
-                handle_update(db, tg, settings, upd, allow_run=True)
+                handle_update(db, tg, settings, upd, allow_run=coordinator is None,
+                              coordinator=coordinator)
             except Exception:  # noqa: BLE001
                 log.exception("update failed")
             db.set_meta("tg_offset", str(upd["update_id"] + 1))

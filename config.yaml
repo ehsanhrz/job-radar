@@ -281,3 +281,40 @@ telegram:
 
 watchdog:
   zero_runs_alert: 3      # alert if a source returns 0 jobs N runs in a row
+
+# ── Deterministic matching engine v2 ──
+matching:
+  evaluation_version: 2
+  candidate_profile: candidate_profile.yaml
+  insufficient_confidence: 0.25
+  critical_gap_penalty_per_requirement: 8
+  critical_gap_penalty_max: 18
+  critical_requirements: [AWS, Azure, GCP, Kubernetes, Terraform]
+  # Relative importance: role and mandatory coverage account for 65% of the
+  # measured dimensions. Domain is intentionally capped at 2%.
+  weights:
+    role: 0.25
+    mandatory: 0.40
+    preferred: 0.12
+    responsibilities: 0.10
+    seniority: 0.08
+    practices: 0.03
+    domain: 0.02
+  thresholds:
+    strong_match: 80
+    good_match: 65
+    possible_match: 45
+  role_compatibility:
+    backend_engineering: 100
+    full_stack_engineering: 68
+    frontend_engineering: 18
+    mobile_engineering: 12
+    platform_engineering: 32
+    devops: 20
+    sre: 20
+    qa_testing: 12
+    data_engineering: 30
+    machine_learning: 12
+    engineering_management: 18
+    other: 25
+    unknown: 50

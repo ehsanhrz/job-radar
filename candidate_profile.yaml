@@ -1,0 +1,155 @@
+version: 1
+identity:
+  title: Backend Software Engineer
+  professional_experience_years: 5
+  evidence: Approximately five years of professional backend engineering; no per-technology duration asserted.
+  domains: [fintech, trading]
+
+# Proficiency means demonstrated depth, not years. Evidence is deliberately concise
+# and should be edited when the candidate supplies stronger or newer examples.
+skills:
+  - name: C#
+    level: primary
+    aliases: [C Sharp, CSharp]
+    evidence: Strong professional C# backend development experience.
+  - name: .NET
+    level: primary
+    aliases: [Dotnet, .NET Core, ASP.NET, ASP.NET Core]
+    evidence: Strong .NET and ASP.NET Core production backend experience.
+  - name: Backend application development
+    level: primary
+    aliases: [backend development, backend APIs, server-side development]
+    evidence: Production backend application engineering.
+  - name: SQL
+    level: strong
+    aliases: [relational database, relational databases]
+    evidence: Strong professional relational database experience.
+  - name: PostgreSQL
+    level: strong
+    aliases: [Postgres]
+    evidence: Professional PostgreSQL use.
+  - name: SQL Server
+    level: strong
+    aliases: [Microsoft SQL Server, MSSQL]
+    evidence: Professional SQL Server use.
+  - name: Redis
+    level: strong
+    aliases: []
+    evidence: Professional backend caching and data-store experience.
+  - name: RabbitMQ
+    level: strong
+    aliases: []
+    evidence: Professional messaging and distributed processing experience.
+  - name: Distributed systems
+    level: strong
+    aliases: [distributed applications, distributed processing]
+    evidence: Production distributed application engineering.
+  - name: REST APIs
+    level: strong
+    aliases: [REST API, RESTful APIs, Web APIs]
+    evidence: Production API and external integration work.
+  - name: External API integrations
+    level: strong
+    aliases: [external integrations, third-party integrations, service integrations]
+    evidence: Production integrations including financial services.
+  - name: Docker
+    level: strong
+    aliases: [containers, containerization]
+    evidence: Professional Docker use.
+  - name: Linux
+    level: strong
+    aliases: [Linux systems]
+    evidence: Professional application development and operations on Linux.
+  - name: TypeScript
+    level: additional
+    aliases: []
+    evidence: Additional professional experience; not claimed as primary expertise.
+  - name: NestJS
+    level: additional
+    aliases: [Nest.js]
+    evidence: Additional backend framework experience.
+  - name: Python
+    level: additional
+    aliases: []
+    evidence: Additional development experience.
+  - name: Go
+    level: additional
+    aliases: [Golang]
+    evidence: Additional development experience.
+  - name: Kafka
+    level: additional
+    aliases: [Apache Kafka]
+    evidence: Additional messaging experience; not represented as equivalent to RabbitMQ.
+  - name: MongoDB
+    level: additional
+    aliases: [Mongo]
+    evidence: Additional database experience.
+  - name: OpenTelemetry
+    level: additional
+    aliases: [OTel]
+    evidence: Additional observability experience.
+  - name: Prometheus
+    level: additional
+    aliases: []
+    evidence: Additional monitoring experience.
+  - name: Grafana
+    level: additional
+    aliases: []
+    evidence: Additional monitoring and dashboards experience.
+  - name: Docker Swarm
+    level: additional
+    aliases: [Swarm]
+    evidence: Additional container orchestration experience; not Kubernetes production experience.
+  - name: Traefik
+    level: additional
+    aliases: []
+    evidence: Additional reverse proxy experience.
+  - name: PgBouncer
+    level: additional
+    aliases: []
+    evidence: Additional PostgreSQL connection-pooling experience.
+
+practices:
+  - name: Domain-Driven Design
+    aliases: [DDD, domain driven design]
+  - name: CQRS
+    aliases: [command query responsibility segregation]
+  - name: Clean Architecture
+    aliases: [hexagonal architecture, ports and adapters]
+  - name: Event-Driven Architecture
+    aliases: [event driven architecture, event-driven systems]
+  - name: Microservices
+    aliases: [microservice architecture]
+  - name: Integration Design
+    aliases: [integration architecture, API integration design]
+  - name: Concurrency and Distributed Processing
+    aliases: [concurrency, distributed processing]
+  - name: Testing and Maintainability
+    aliases: [automated testing, testability, maintainable code]
+  - name: CI/CD
+    aliases: [continuous integration, continuous delivery, deployment pipelines]
+
+domains:
+  - name: Fintech
+    aliases: [financial technology, financial services]
+  - name: Trading Systems
+    aliases: [trading platform, trading system, brokerage, exchange]
+  - name: Payments
+    aliases: [payment processing, payment gateway, payment provider]
+  - name: Wallets
+    aliases: [digital wallet, wallet systems]
+  - name: Exchange Integrations
+    aliases: [exchange integration, crypto exchange integration]
+  - name: KYC Integrations
+    aliases: [KYC, identity verification, onboarding integrations]
+  - name: External API Integrations
+    aliases: [third-party API, external service integration]
+
+# No demonstrated professional experience is asserted for these areas.
+explicit_limitations:
+  - AWS
+  - Azure
+  - GCP
+  - Kubernetes
+  - SRE
+  - dedicated DevOps

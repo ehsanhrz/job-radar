@@ -565,7 +565,7 @@ def test_resume_slot_is_consumed_and_real_times_kept(db):
     assert _seconds_until_next(db, 6 * 3600, 0) > 5.9 * 3600
 
 
-def test_rescore_unvetoes_jobs_without_proof(db, ev):
+def test_v2_rescore_does_not_requeue_legacy_filtered_history(db, ev):
     import json as _json
     r = CollectResult()
     r.jobs = [job("Senior .NET Developer", "C# fully remote", target="Turkey")]
@@ -576,7 +576,8 @@ def test_rescore_unvetoes_jobs_without_proof(db, ev):
                                          "flags": []}), "filtered", "ai: not feasible from Iran (x)")
     from jobradar.pipeline import rescore_all
     out = rescore_all(db, CFG)
-    assert out["changed"] == 1 and db.get(jid)["status"] == "queued"
+    assert out["changed"] == 0 and db.get(jid)["status"] == "filtered"
+    assert db.get(jid)["score"] == 90 and db.get(jid)["filter_reason"].startswith("ai:")
 
 
 def test_vetoed_command_lists_reasons(db, ev, tmp_path):
@@ -633,8 +634,7 @@ def test_indeed_kept_only_with_company_link(ev):
     assert li.url == "https://www.linkedin.com/jobs/view/1"
 
 
-def test_old_indeed_rows_cleaned_once(tmp_path):
-    import sqlite3
+def test_old_indeed_rows_are_preserved_by_migrations(tmp_path):
     db = DB(tmp_path / "x.db")
     db.conn.execute("DELETE FROM meta WHERE key='cleanup_indeed_v1'")
     for jid, url, st in (("a", "https://tr.indeed.com/viewjob?jk=1", "queued"),
@@ -645,7 +645,8 @@ def test_old_indeed_rows_cleaned_once(tmp_path):
     db.conn.commit()
     db2 = DB(tmp_path / "x.db")
     left = {r["id"] for r in db2.conn.execute("SELECT id FROM jobs")}
-    assert left == {"b", "c"}  # unsent indeed.com row gone; applied + direct-link kept
+    assert left == {"a", "b", "c"}  # schema upgrades must not discard historical opportunities
+    assert db2.get_meta("cleanup_indeed_v1") == "superseded_preserve_history"
 
 
 # ---------------- report fixes (2026-11-01 report) ----------------
@@ -786,26 +787,23 @@ def test_split_message_respects_telegram_limit():
     assert split_message("short") == ["short"]
 
 
-def test_ats_keeps_low_jobs_within_ai_margin(tmp_path, monkeypatch):
-    """With ai.review_margin > 0 a borderline company-board job must still reach the AI."""
+def test_ats_uses_v2_possible_match_and_geographic_eligibility(tmp_path, monkeypatch):
+    """Possible V2 matches stay reviewable; geographic vetoes still apply."""
     from jobradar import pipeline
     from jobradar.collectors import ats
-    from jobradar.filters import Evaluator
     captured = {}
     monkeypatch.setattr(pipeline, "collect_all", lambda *a, **k: CollectResult())
     monkeypatch.setattr(ats, "run_step", lambda db, cfg, res, keep: captured.setdefault("keep", keep) and CollectResult()
                         or CollectResult())
     cfg = {**CFG, "ai": {**CFG["ai"], "enabled": False, "review_margin": 15}}
-    ev = Evaluator(cfg)
     border = job("Software Engineer", "We use C# and remote work", site="greenhouse", is_remote=True,
                  location="Remote: Anywhere")
-    score = ev.evaluate(border).score
-    assert ev.min_score - 15 <= score < ev.min_score, score         # really borderline
     settings = _settings(tmp_path)
     settings.raw = cfg
     pipeline.run_once(settings, dry_run=True, process_updates=False)
     assert captured["keep"](border)
-    junk = job("Software Engineer", "PHP on-site hybrid", site="greenhouse", is_remote=True, location="Remote")
+    junk = job("Software Engineer", "Must be based in the UK.", site="greenhouse", is_remote=True,
+               location="Remote: Worldwide")
     assert not captured["keep"](junk)
 
 

@@ -2,14 +2,14 @@
 
 ## Current lifecycle
 
-The operational path is `main → run_once → collect_all → source collectors → CollectResult → source health persistence → ingest/evaluate → SQLite → queued selection → Telegram → user callback → status update`.
+The production operational path is `main service → service.run_service → one Telegram poller + RunCoordinator → run_once → collect_all → source collectors/ATS boards → CollectResult → source health persistence → V2 ingest/evaluate → SQLite → versioned queued selection → Telegram → user callback → status update`.
 
-1. **Start and settings.** `main()` dispatches a command. `run_once` opens SQLite and (unless dry-run) constructs Telegram (`jobradar/__main__.py:111-137`, `jobradar/pipeline.py:83-88`). In non-dry mode, Telegram configuration is mandatory even if the operator only wants a local scan.
-2. **Drain old Telegram actions.** `process_pending` reads the stored Telegram offset, fetches pending updates, handles them, then saves each next offset (`jobradar/pipeline.py:89-92`, `jobradar/bot.py:106-124`). Update errors are logged but the offset still advances, so a failed callback can be lost rather than retried.
+1. **Start and scheduling.** `service` initializes SQLite, starts one Telegram poller, and uses `RunCoordinator` for both scheduled and manual work. `last_run_at` is persisted in `meta` before a real run. On a fresh database service runs immediately; after a restart it waits for the remaining configured interval, including configured jitter, rather than repeating the just-started run.
+2. **Telegram updates.** The polling bot owns `getUpdates`, offset handling, commands, and callbacks. Scheduled pipeline work runs with `process_updates=False`, so it does not compete for Telegram updates.
 3. **Discover.** `collect_all` runs JobSpy first, then Arbeitnow sequentially (`jobradar/collectors/__init__.py:7-10`). JobSpy loops over target × search term × site, sleeps between calls, calls `scrape_jobs`, normalizes records (`jobradar/collectors/jobspy_collector.py:75-143`). Arbeitnow follows `links.next` up to configured page count (`jobradar/collectors/arbeitnow.py:45-75`).
 4. **Aggregate source health.** Each collector returns `CollectResult`; one call records attempted calls, result count, and last error per source (`jobradar/collectors/base.py:9-36`). `record_health` inserts one source-run record per source per overall run (`jobradar/pipeline.py:29-32`).
-5. **Dedupe and evaluate.** `ingest` checks `DB.seen` by URL-derived ID or company/title/city fingerprint. Existing jobs are skipped. New jobs go through `Evaluator.evaluate`, then get inserted with status `filtered`, `low`, or `queued` (`jobradar/pipeline.py:15-26`).
-6. **Deliver.** `send_queued` selects up to `telegram.max_per_run`, ordered by score, renders a message and buttons, and sends one at a time. Telegram errors break the loop; the remaining rows remain queued. A successful send is followed by a status update to `sent` (`jobradar/pipeline.py:63-80`). In dry-run, messages are printed and state stays queued.
+5. **Dedupe and evaluate.** `ingest` checks `DB.seen` by URL-derived ID or company/title/city fingerprint. New jobs go through `MatchingEngine.evaluate`, then persist the V2 evaluation with `filtered`, `low`, or `queued` status. Pending legacy queued/low records can be upgraded without changing sent or application history.
+6. **Deliver.** `send_queued` selects V2 queued jobs only, ordered by normalized technical fit, renders a compact explanation and buttons, and sends one at a time. Telegram errors break the loop; the remaining rows remain queued. A successful send is followed by a status update to `sent`. In dry-run, messages are printed and state stays queued.
 7. **Watchdog and summary.** Three consecutive zero-found runs for a source trigger one alert, and a positive result resets that alert (`jobradar/pipeline.py:34-60`). Run summary contains new/sent/low/filtered/duplicate counts and source calls/found/errors (`jobradar/pipeline.py:101-120`).
 8. **Application tracking.** Telegram callbacks update status to `applied`, `skipped`, `saved`, or `sent` via `DB.set_status` (`jobradar/bot.py:50-72`). These are user-entered tracking states, not a verified employer outcome.
 
@@ -27,7 +27,7 @@ See the “current execution” flowchart in [10 — Architecture diagrams](10-a
 
 ## Idempotency and state
 
-An individual URL is mostly idempotent because URL SHA-1 prefix is the primary key and inserts use `INSERT OR IGNORE`. Cross-board duplicate idempotency is weaker: fingerprint is indexed but not unique, and `seen()` then `insert()` are separate operations. Two processes can race. Delivery also has a send/mark gap. DB statuses have no declared CHECK constraint or transition table; `set_status` accepts any string. The bot accepts callbacks only from the configured chat, but it does not validate status values or legal transitions.
+An individual URL is mostly idempotent because URL SHA-1 prefix is the primary key and inserts use `INSERT OR IGNORE`. Cross-board duplicate idempotency is weaker: fingerprint is indexed but not unique, and `seen()` then `insert()` are separate operations. The unified runtime removes its former worker/bot overlap, but separate CLI processes can still race. Delivery also has a send/mark gap. DB statuses have no declared CHECK constraint or transition table; `set_status` accepts any string.
 
 ## Operations and observability
 

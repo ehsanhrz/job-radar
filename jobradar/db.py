@@ -30,7 +30,14 @@ CREATE TABLE IF NOT EXISTS jobs (
     first_seen    TEXT NOT NULL,
     sent_at       TEXT,
     tg_message_id INTEGER,
-    updated_at    TEXT
+    updated_at    TEXT,
+    evaluation_version INTEGER,
+    technical_fit_score INTEGER,
+    role_family TEXT,
+    seniority TEXT,
+    confidence REAL,
+    match_decision TEXT,
+    evaluation_details TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_jobs_fp ON jobs(fingerprint);
 CREATE INDEX IF NOT EXISTS ix_jobs_status ON jobs(status);
@@ -101,17 +108,19 @@ class DB:
         for name, ddl in (("keyword_score", "INTEGER"), ("ai_review", "TEXT"), ("ai_status", "TEXT")):
             if name not in cols:
                 self.conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {ddl}")
+        for name, ddl in (("evaluation_version", "INTEGER"), ("technical_fit_score", "INTEGER"),
+                          ("role_family", "TEXT"), ("seniority", "TEXT"), ("confidence", "REAL"),
+                          ("match_decision", "TEXT"), ("evaluation_details", "TEXT")):
+            if name not in cols:
+                self.conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {ddl}")
         ats_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(ats_companies)")}
         if ats_cols and "empty_checks" not in ats_cols:
             self.conn.execute("ALTER TABLE ats_companies ADD COLUMN empty_checks INTEGER NOT NULL DEFAULT 0")
-        # v0.4: Indeed jobs used to be stored with their indeed.com link. Forget the unsent
-        # ones so they can come back with the company's direct link (dedupe would block them).
+        # The old v0.4 migration deleted pending Indeed records. Preserve history
+        # across matching/database upgrades and retire that destructive cleanup.
         self.conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
-        done = self.conn.execute("SELECT 1 FROM meta WHERE key='cleanup_indeed_v1'").fetchone()
-        if not done:
-            self.conn.execute("""DELETE FROM jobs WHERE site='indeed' AND url LIKE '%indeed.com%'
-                                 AND status IN ('queued', 'low', 'filtered')""")
-            self.conn.execute("INSERT INTO meta (key, value) VALUES ('cleanup_indeed_v1', '1')")
+        self.conn.execute("INSERT OR IGNORE INTO meta (key, value) "
+                          "VALUES ('cleanup_indeed_v1', 'superseded_preserve_history')")
 
     # ---------- jobs ----------
     def seen(self, job: Job) -> bool:
@@ -121,12 +130,14 @@ class DB:
         ).fetchone()
         return row is not None
 
-    def insert(self, job: Job, status: str, filter_reason: str | None = None) -> None:
+    def insert(self, job: Job, status: str, filter_reason: str | None = None,
+               evaluation: dict | None = None) -> None:
         self.conn.execute(
             """INSERT OR IGNORE INTO jobs (id, fingerprint, source, site, target, title, company,
                location, url, is_remote, date_posted, salary, description, score, reasons,
-               status, filter_reason, first_seen, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               status, filter_reason, first_seen, updated_at, evaluation_version, technical_fit_score,
+               role_family, seniority, confidence, match_decision, evaluation_details)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 job.id, job.fingerprint, job.source, job.site, job.target, job.title, job.company,
                 job.location, job.url,
@@ -134,15 +145,43 @@ class DB:
                 job.date_posted.isoformat() if job.date_posted else None,
                 job.salary, job.description, job.score, json.dumps(job.reasons),
                 status, filter_reason, now(), now(),
+                evaluation.get("evaluation_version") if evaluation else None,
+                evaluation.get("technical_fit_score") if evaluation else None,
+                evaluation.get("role_family") if evaluation else None,
+                evaluation.get("seniority") if evaluation else None,
+                evaluation.get("confidence") if evaluation else None,
+                evaluation.get("decision") if evaluation else None,
+                json.dumps(evaluation, ensure_ascii=False) if evaluation else None,
             ),
         )
         self.conn.commit()
 
-    def queued(self, limit: int) -> list[sqlite3.Row]:
+    def queued(self, limit: int, evaluation_version: int | None = None) -> list[sqlite3.Row]:
+        version_sql = " AND evaluation_version = ?" if evaluation_version is not None else ""
+        params = ("queued", evaluation_version, limit) if evaluation_version is not None else ("queued", limit)
         return self.conn.execute(
-            "SELECT * FROM jobs WHERE status = 'queued' ORDER BY score DESC, first_seen DESC LIMIT ?",
-            (limit,),
+            "SELECT * FROM jobs WHERE status = ?" + version_sql +
+            " ORDER BY COALESCE(technical_fit_score, score) DESC, first_seen DESC LIMIT ?", params,
         ).fetchall()
+
+    def unversioned_pending(self, limit: int = 100_000) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM jobs WHERE evaluation_version IS NULL AND status IN ('queued','low') "
+            "ORDER BY first_seen LIMIT ?", (limit,)).fetchall()
+
+    def save_v2_evaluation(self, job_id: str, evaluation: dict, status: str,
+                           filter_reason: str | None, pending_only: bool = True) -> bool:
+        status_clause = " AND status IN ('queued','low')" if pending_only else ""
+        cur = self.conn.execute(
+            "UPDATE jobs SET evaluation_version=?, technical_fit_score=?, role_family=?, seniority=?, "
+            "confidence=?, match_decision=?, evaluation_details=?, status=?, filter_reason=?, updated_at=? "
+            "WHERE id=?" + status_clause,
+            (evaluation["evaluation_version"], evaluation["technical_fit_score"], evaluation["role_family"],
+             evaluation["seniority"], evaluation["confidence"], evaluation["decision"],
+             json.dumps(evaluation, ensure_ascii=False), status, filter_reason, now(), job_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def mark_sent(self, job_id: str, message_id: int | None) -> None:
         self.conn.execute(
@@ -179,6 +218,17 @@ class DB:
             "SELECT * FROM jobs WHERE status = ? ORDER BY updated_at DESC, id ASC LIMIT ? OFFSET ?",
             (status, limit, offset),
         ).fetchall()
+
+    def review_candidates(self, limit: int, offset: int = 0) -> tuple[int, list[sqlite3.Row]]:
+        total = int(self.conn.execute(
+            "SELECT COUNT(*) AS count FROM jobs WHERE status='low' AND evaluation_version=2"
+        ).fetchone()["count"])
+        rows = self.conn.execute(
+            "SELECT * FROM jobs WHERE status='low' AND evaluation_version=2 "
+            "ORDER BY technical_fit_score DESC, confidence DESC, first_seen DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+        return total, rows
 
     def update_evaluation(self, job_id: str, status: str, score: int, reasons: list[str],
                           filter_reason: str | None) -> None:

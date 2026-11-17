@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import time
 
 from .ai import AIReviewer, Review, apply_review, job_text
@@ -8,6 +9,7 @@ from .collectors import CollectResult, collect_all
 from .config import Settings
 from .db import DB
 from .filters import Evaluator
+from .matching import EVALUATION_VERSION, MatchingEngine, TechnicalEvaluation
 from .telegram import Telegram, TelegramError, format_job, job_buttons
 
 log = logging.getLogger(__name__)
@@ -15,15 +17,33 @@ log = logging.getLogger(__name__)
 
 def ingest(db: DB, evaluator: Evaluator, result: CollectResult) -> dict[str, int]:
     counts = {"new": 0, "duplicate": 0, "filtered": 0, "low": 0, "queued": 0}
+    score_distribution = {"0-39": 0, "40-59": 0, "60-79": 0, "80-100": 0}
     for job in result.jobs:
         if db.seen(job):
             counts["duplicate"] += 1
             continue
-        v = evaluator.evaluate(job)
-        job.score, job.reasons = v.score, v.reasons
-        db.insert(job, v.status, v.filter_reason)
+        try:
+            v = evaluator.evaluate(job)
+        except Exception:  # noqa: BLE001 - one malformed description must not abort collection
+            log.exception("evaluation failed for job %s", job.id)
+            counts.setdefault("evaluation_errors", 0)
+            counts["evaluation_errors"] += 1
+            continue
+        if isinstance(v, TechnicalEvaluation):
+            status, filter_reason = evaluator.status(v)
+            job.score, job.reasons = v.technical_fit_score, v.reasons
+            db.insert(job, status, filter_reason, evaluation=v.to_dict())
+            bucket = "0-39" if v.technical_fit_score < 40 else "40-59" if v.technical_fit_score < 60 else \
+                     "60-79" if v.technical_fit_score < 80 else "80-100"
+            score_distribution[bucket] += 1
+        else:
+            status, filter_reason = v.status, v.filter_reason
+            job.score, job.reasons = v.score, v.reasons
+            db.insert(job, status, filter_reason)
         counts["new"] += 1
-        counts[v.status] += 1
+        counts[status] += 1
+    if isinstance(evaluator, MatchingEngine):
+        log.info("matching v%d score distribution: %s", EVALUATION_VERSION, score_distribution)
     return counts
 
 
@@ -101,34 +121,57 @@ def ai_review_step(db: DB, reviewer: AIReviewer, cfg: dict) -> dict[str, int]:
 
 
 def rescore_all(db: DB, cfg: dict) -> dict[str, int]:
-    """Re-apply keyword rules (and stored AI opinions) to every job not sent yet."""
+    """Explicitly reevaluate pending jobs with V2; completed history is immutable."""
     from datetime import date
     from .models import Job
-    ev = Evaluator(cfg)
+    ev = MatchingEngine(cfg)
     out = {"changed": 0, "now_queued": 0}
-    for row in db.by_status(("filtered", "low", "queued"), limit=100_000):
-        job = Job(source=row["source"], site=row["site"], title=row["title"], url=row["url"],
-                  company=row["company"], location=row["location"], description=row["description"],
-                  is_remote=bool(row["is_remote"]) if row["is_remote"] is not None else None,
-                  date_posted=date.fromisoformat(row["date_posted"]) if row["date_posted"] else None,
-                  target=row["target"])
+    for row in db.by_status(("low", "queued"), limit=100_000):
+        job = _row_job(row, date)
         v = ev.evaluate(job)
-        status, score, reason = v.status, v.score, v.filter_reason
-        review = Review.from_json(row["ai_review"])
-        if review and v.status != "filtered":  # keep the AI's opinion on top of new rules
-            score, veto = apply_review(v.score, review, cfg, job_text(dict(row)))
-            status = "filtered" if veto else ("queued" if score >= ev.min_score else "low")
-            reason = veto
-        if status != row["status"] or score != row["score"]:
-            db.update_evaluation(row["id"], status, score, v.reasons, reason)
+        status, reason = ev.status(v)
+        try:
+            previous = json.loads(row["evaluation_details"] or "null")
+        except (TypeError, ValueError):
+            previous = None
+        if previous != v.to_dict() or status != row["status"]:
+            db.save_v2_evaluation(row["id"], v.to_dict(), status, reason)
             out["changed"] += 1
-    out["now_queued"] = len(db.queued(100_000))
+    out["now_queued"] = len(db.queued(100_000, evaluation_version=EVALUATION_VERSION))
     return out
 
 
-def send_queued(db: DB, tg: Telegram | None, cfg: dict, dry_run: bool) -> int:
+def _row_job(row, date_type=None):
+    from datetime import date as date_cls
+    from .models import Job
+    date_type = date_type or date_cls
+    return Job(source=row["source"], site=row["site"], title=row["title"], url=row["url"],
+               company=row["company"], location=row["location"], description=row["description"],
+               is_remote=bool(row["is_remote"]) if row["is_remote"] is not None else None,
+               date_posted=date_type.fromisoformat(row["date_posted"]) if row["date_posted"] else None,
+               target=row["target"])
+
+
+def _upgrade_pending_evaluations(db: DB, evaluator: MatchingEngine) -> int:
+    """Version pending legacy rows once, without touching filtered/sent/application history."""
+    from datetime import date
+    changed = 0
+    for row in db.unversioned_pending():
+        try:
+            result = evaluator.evaluate(_row_job(row, date))
+            status, reason = evaluator.status(result)
+            changed += db.save_v2_evaluation(row["id"], result.to_dict(), status, reason)
+        except Exception:  # noqa: BLE001
+            log.exception("V2 migration evaluation failed for pending job %s", row["id"])
+    if changed:
+        log.info("versioned %d legacy pending jobs with matching v%d", changed, EVALUATION_VERSION)
+    return changed
+
+
+def send_queued(db: DB, tg: Telegram | None, cfg: dict, dry_run: bool,
+                evaluation_version: int | None = None) -> int:
     tcfg = cfg.get("telegram") or {}
-    rows = db.queued(int(tcfg.get("max_per_run", 20)))
+    rows = db.queued(int(tcfg.get("max_per_run", 20)), evaluation_version=evaluation_version)
     sent = 0
     for row in rows:
         text = format_job(row)
@@ -165,24 +208,24 @@ def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = 
         process_pending(db, tg, settings)
 
     started = time.time()
-    evaluator = Evaluator(cfg)
+    evaluator = MatchingEngine(cfg)
+    _upgrade_pending_evaluations(db, evaluator)
     result = collect_all(cfg, settings.scrape_proxies,
                          want_details=lambda job: not db.seen(job) and evaluator.title_ok(job))
     # company boards found in those jobs (and earlier ones), checked directly; never breaks the run
     from .collectors import ats
     # keep only postings that could be sent: queued, or low but within the AI review margin
-    ai_floor = evaluator.min_score - review_margin(cfg)
-
     def ats_keep(job) -> bool:
         v = evaluator.evaluate(job)
-        return v.status == "queued" or (v.status == "low" and v.score >= ai_floor)
+        return evaluator.status(v)[0] in {"queued", "low"}
 
     result.merge(ats.run_step(db, cfg, result, keep=ats_keep))
     record_health(db, result)
     counts = ingest(db, evaluator, result)
-    reviewer = AIReviewer(cfg)
-    ai = ai_review_step(db, reviewer, cfg)
-    sent = send_queued(db, tg, cfg, dry_run)
+    # Do not combine legacy AI-adjusted scores with the normalized deterministic V2 score.
+    ai = {"reviewed": 0, "vetoed": 0, "promoted": 0, "failed": 0,
+          "off": "disabled for matching v2"}
+    sent = send_queued(db, tg, cfg, dry_run, evaluation_version=EVALUATION_VERSION)
     alerts = watchdog(db, result, cfg, tg)
 
     summary = {
@@ -190,7 +233,7 @@ def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = 
         "sent": sent,
         "still_queued": len(db.queued(10_000)),
         "minutes": round((time.time() - started) / 60, 1),
-        "ai": {**ai, **reviewer.stats, "off": reviewer.why_disabled()},
+        "ai": ai,
         "sources": {k: f"{h.found} jobs / {h.calls} calls / {h.errors} err" for k, h in result.health.items()},
     }
     log.info("run summary: %s", summary)
@@ -208,7 +251,7 @@ def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = 
                 f"🛰 <b>Run done</b> in {summary['minutes']} min\n"
                 f"new {counts['new']} · sent {sent} · low-score {counts['low']} · "
                 f"filtered {counts['filtered']} · dupes {counts['duplicate']}\n"
-                f"{_ai_summary(summary['ai'])}{src}"
+                f"{src}"
             )
         except TelegramError as e:
             log.error("summary failed: %s", e)

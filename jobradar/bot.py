@@ -22,6 +22,7 @@ HELP = (
     "/stats – counts + source health\n"
     "/saved – jobs you starred\n"
     "/applied – jobs you applied to\n"
+    "/review [page] – inspect possible and low-confidence V2 matches\n"
     "/vetoed – jobs the AI dropped, with its reason\n"
     "/rescore – re-apply the current rules to unsent jobs, then send new matches\n"
     "/report [24h|7d|all] – full JSON report: runs, sources, issues, jobs\n"
@@ -31,6 +32,7 @@ HELP = (
 
 _run_lock = threading.Lock()
 APPLIED_PAGE_SIZE = 10
+REVIEW_PAGE_SIZE = 10
 TELEGRAM_SAFE_LENGTH = 3900
 
 
@@ -100,6 +102,30 @@ def _applied_page(db: DB, page: int) -> tuple[list[str], list[list[dict]] | None
     return messages, buttons
 
 
+def _review_page(db: DB, page: int) -> tuple[str, list[list[dict]] | None]:
+    total = db.review_candidates(1, 0)[0]
+    pages = max(1, math.ceil(total / REVIEW_PAGE_SIZE))
+    if page < 1 or page > pages:
+        return f"V2 review queue: {total}\nInvalid page {page}. Choose 1–{pages}.", None
+    _, rows = db.review_candidates(REVIEW_PAGE_SIZE, (page - 1) * REVIEW_PAGE_SIZE)
+    start = (page - 1) * REVIEW_PAGE_SIZE + 1 if total else 0
+    end = min(page * REVIEW_PAGE_SIZE, total)
+    lines = [f"<b>V2 review queue: {total}</b>", f"Showing {start}–{end} · page {page} of {pages}"]
+    if not rows:
+        lines.append("No possible or low-confidence matches.")
+    for row in rows:
+        lines.append(f"\n<b>{e(row['technical_fit_score'])}/100</b> · {e(row['role_family'])} · "
+                     f"{e(row['seniority'])} · {float(row['confidence'] or 0):.0%}\n"
+                     f"{e((row['title'] or '')[:120])} — {e((row['company'] or '—')[:70])}\n"
+                     f"Explain: <code>{e(row['id'])}</code>")
+    nav = []
+    if page > 1:
+        nav.append({"text": "‹ Previous", "callback_data": f"rv:{page - 1}"})
+    if page < pages:
+        nav.append({"text": "Next ›", "callback_data": f"rv:{page + 1}"})
+    return "\n".join(lines), [nav] if nav else None
+
+
 def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run: bool = False,
                   coordinator=None) -> None:
     allowed = str(settings.telegram_chat_id)
@@ -107,7 +133,16 @@ def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run
     cq = upd.get("callback_query")
     if cq:
         data = cq.get("data") or ""
-        if data.startswith("ap:"):
+        if data.startswith("rv:"):
+            try:
+                page = int(data.split(":", 1)[1])
+            except ValueError:
+                tg.answer_callback(cq["id"], "Invalid page")
+                return
+            text, buttons = _review_page(db, page)
+            tg.send(text, buttons)
+            tg.answer_callback(cq["id"])
+        elif data.startswith("ap:"):
             try:
                 page = int(data.split(":", 1)[1])
             except ValueError:
@@ -156,6 +191,14 @@ def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run
         texts, buttons = _applied_page(db, page)
         for i, body in enumerate(texts):
             tg.send(body, buttons if i == len(texts) - 1 else None)
+    elif text == "/review" or text.startswith("/review "):
+        arg = text.partition(" ")[2].strip()
+        try:
+            page = int(arg) if arg else 1
+        except ValueError:
+            page = 0
+        body, buttons = _review_page(db, page)
+        tg.send(body, buttons)
     elif text == "/run":
         if coordinator is not None:
             tg.send("🛰 Starting a run…" if coordinator.start_manual() else "A run is already in progress.")

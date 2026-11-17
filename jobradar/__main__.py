@@ -86,6 +86,18 @@ def cmd_rescore(args, settings) -> None:
     print(f"rescored: {out['changed']} jobs changed. queued now: {out['now_queued']}")
 
 
+def cmd_explain(args, settings) -> None:
+    """Print the persisted V2 evaluation for a job id."""
+    import json
+    from .db import DB
+    row = DB(settings.db_path).get(args.job_id)
+    if row is None:
+        raise SystemExit(f"Job not found: {args.job_id}")
+    if not row["evaluation_details"]:
+        raise SystemExit(f"Job {args.job_id} has no V2 evaluation")
+    print(json.dumps(json.loads(row["evaluation_details"]), indent=2, ensure_ascii=False))
+
+
 def cmd_probe(args, settings) -> None:
     """Check from THIS machine what each HTML board returns and what we parse."""
     from .collectors import html_boards as hb
@@ -182,6 +194,8 @@ def main() -> None:
     sub.add_parser("service", help="run Telegram polling and automatic scheduler together")
     sub.add_parser("stats", help="print counts and source health")
     sub.add_parser("rescore", help="re-apply filters after editing config.yaml")
+    explain = sub.add_parser("explain", help="show a job's persisted technical evaluation")
+    explain.add_argument("job_id")
     sub.add_parser("test-telegram", help="send a test message")
     sub.add_parser("probe", help="check what the HTML boards and feeds return from this machine")
     rp = sub.add_parser("report", help="write the full JSON report (runs, sources, issues, jobs)")
@@ -194,7 +208,8 @@ def main() -> None:
     settings = load_settings(args.config)
     {
         "run": cmd_run, "loop": cmd_loop, "bot": cmd_bot, "service": cmd_service, "stats": cmd_stats,
-        "rescore": cmd_rescore, "test-telegram": cmd_test_telegram, "chat-id": cmd_chat_id,
+        "rescore": cmd_rescore, "explain": cmd_explain,
+        "test-telegram": cmd_test_telegram, "chat-id": cmd_chat_id,
     }[args.cmd](args, settings)
 
 

@@ -125,6 +125,11 @@ def status_buttons(job_id: str, status: str) -> list[list[dict]]:
 def format_job(row: sqlite3.Row | dict) -> str:
     r = dict(row)
     reasons = json.loads(r.get("reasons") or "[]")
+    evaluation = {}
+    try:
+        evaluation = json.loads(r.get("evaluation_details") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        pass
     remote = " · 🌐 Remote" if r.get("is_remote") else ""
     lines = [
         f"<b>{e(r['title'])}</b>",
@@ -133,7 +138,19 @@ def format_job(row: sqlite3.Row | dict) -> str:
     ]
     if r.get("salary"):
         lines.append(f"💰 {e(r['salary'])}")
-    lines.append(f"⭐ <b>{r.get('score', 0)}</b>  <i>{e(', '.join(reasons[:6]))}</i>")
+    fit = r.get("technical_fit_score")
+    if fit is not None:
+        confidence = float(r.get("confidence") or 0)
+        lines.append(f"🎯 <b>Technical fit {fit}/100</b> · {e(r.get('role_family') or 'unknown')} · "
+                     f"{e(r.get('seniority') or 'unknown')} · confidence {confidence:.0%}")
+        why = evaluation.get("reasons") or []
+        if why:
+            lines.append(f"<i>{e(' · '.join(why[:3]))}</i>")
+        gaps = evaluation.get("important_gaps") or []
+        if gaps:
+            lines.append(f"⚠️ Gaps: {e(' · '.join(gaps[:2]))}")
+    else:
+        lines.append(f"⭐ <b>{r.get('score', 0)}</b>  <i>{e(', '.join(reasons[:6]))}</i>")
     from .ai import format_review, job_text  # local import: avoid a cycle
     ai_line = format_review(r.get("ai_review"), job_text(r))
     if ai_line:

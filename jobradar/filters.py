@@ -85,7 +85,7 @@ class Evaluator:
         self.min_score = int(s.get("min_score", 30))
 
     def title_ok(self, job: Job) -> bool:
-        """Cheap pre-check (title rules only) used before fetching a description."""
+        """Legacy inexpensive detail-fetch gate; production V2 uses MatchingEngine.title_ok."""
         title = job.title or ""
         if self.title_include and not any(p.search(title) for p in self.title_include):
             return False

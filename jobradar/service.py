@@ -5,12 +5,39 @@ import logging
 import random
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Callable
 
 from .config import Settings
 from .db import DB
 
 log = logging.getLogger(__name__)
+
+LAST_RUN_KEY = "last_run_at"
+
+
+def seconds_until_next_run(database: DB, interval_seconds: float, jitter_seconds: float,
+                           jitter: Callable[[float, float], float] = random.uniform) -> float:
+    """Return the persisted schedule delay, or zero for a brand-new database.
+
+    ``run_once`` records ``last_run_at`` before collector work starts.  Scheduling
+    from that durable value prevents a deploy or service restart from immediately
+    repeating a run that just started or completed.  Jitter remains part of the
+    regular cadence but never shortens a restart delay below five minutes.
+    """
+    last = database.get_meta(LAST_RUN_KEY)
+    if not last:
+        return 0.0
+    try:
+        started = datetime.fromisoformat(last)
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        log.warning("invalid %s value %r; scheduling a run now", LAST_RUN_KEY, last)
+        return 0.0
+    elapsed = (datetime.now(timezone.utc) - started.astimezone(timezone.utc)).total_seconds()
+    remaining = interval_seconds - elapsed + jitter(-jitter_seconds, jitter_seconds)
+    return max(300.0, remaining)
 
 
 class RunCoordinator:
@@ -85,7 +112,6 @@ def run_service(settings: Settings, stop_event: threading.Event | None = None,
 
     stop = stop_event or threading.Event()
     database = DB(settings.db_path)
-    database.conn.close()
     runner = bot_runner or run_bot
     execute = run or (lambda: run_once(settings, process_updates=False))
     coordinator = RunCoordinator(execute)
@@ -104,15 +130,17 @@ def run_service(settings: Settings, stop_event: threading.Event | None = None,
     wait_fn = wait or stop.wait
     try:
         while not stop.is_set():
-            coordinator.execute_scheduled()
+            delay = seconds_until_next_run(database, interval, jitter_seconds, jitter)
+            if delay > 0:
+                log.info("next scheduled run in %.0f min", delay / 60)
+                if wait_fn(delay):
+                    break
             if stop.is_set():
                 break
-            delay = max(300, interval + jitter(-jitter_seconds, jitter_seconds))
-            log.info("next scheduled run in %.0f min", delay / 60)
-            if wait_fn(delay):
-                break
+            coordinator.execute_scheduled()
     finally:
         stop.set()
         bot.join()
         coordinator.wait()
+        database.conn.close()
         log.info("service stopped cleanly")

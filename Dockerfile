@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY jobradar ./jobradar
 COPY config.yaml .
+COPY candidate_profile.yaml .
 
 RUN mkdir -p /app/data
 

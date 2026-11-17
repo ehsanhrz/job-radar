@@ -7,14 +7,67 @@ your Telegram with **✅ Applied / ⏭ Skip / ⭐ Save** buttons.
 ```
 collect (JobSpy + Arbeitnow API)
   → normalize → dedupe (URL + company/title/city fingerprint, across boards)
-  → hard filters (US-only, "must reside in EU", clearance, junior, other stacks…)
-  → score (.NET/C# ⬆, Turkish-language posting ⬆, remote ⬆, German-required ⬇ …)
+  → eligibility filters (location, work authorization, remote policy, age)
+  → deterministic Matching Engine V2 (role, requirements, skills, seniority, fit and confidence)
   → SQLite → Telegram (one message per job + run summary)
   → watchdog: alerts you when a source silently dies (0 jobs N runs in a row)
 ```
 
-Everything you'd want to tune — countries, search terms, filters, weights — is in
-[`config.yaml`](config.yaml). Secrets live in `.env`.
+Search and eligibility policy live in [`config.yaml`](config.yaml). The versioned,
+editable candidate evidence and proficiency profile lives in
+[`candidate_profile.yaml`](candidate_profile.yaml). Secrets live in `.env`.
+
+Matching V2 classifies the role from both title and responsibilities, extracts
+explicit required/preferred/optional technologies, and scores demonstrated direct
+and transferable experience on a bounded 0–100 scale. Its confidence is separate
+from fit. This is deterministic text-rule extraction, not semantic AI; descriptions
+that use unusual wording may remain uncertain. Inspect a persisted explanation
+with `python -m jobradar explain JOB_ID`, or use Telegram `/review [page]` to find
+possible and low-confidence V2 matches.
+
+### Matching V2 policy
+
+The score is a weighted mean of active dimensions. Configured weights are role
+compatibility 25%, mandatory skill coverage 40%, preferred coverage 12%, relevant
+responsibilities 10%, seniority 8%, engineering practices 3%, and domain fit 2%.
+Dimensions with no extracted evidence are omitted and the remaining weights are
+renormalized. Mandatory skill-match values are 1.00 for demonstrated primary or
+strong professional experience, 0.62 for configured transferable experience,
+0.42 for partial experience, and 0 for missing experience. Unknown requirements
+are excluded from the coverage denominator rather than called missing. A mandatory
+AWS, Azure, GCP, Kubernetes, or Terraform gap receives an additional configured
+8 point deduction (capped at 18) because explicit infrastructure ownership is
+material to those roles. The complete dimensions, active weights, and deduction
+are stored with each explanation.
+
+Role classification scores title evidence and responsibility/description evidence
+separately. Strong SRE, platform, and DevOps responsibilities reduce generic
+backend evidence. Weak or tied signals remain `unknown`. The candidate's five
+years are evaluated against title, stated experience, and ownership expectations;
+the candidate profile intentionally does not claim years for individual tools.
+
+Decisions use configurable thresholds: `strong_match` requires at least 80 fit
+and 0.60 confidence; `good_match` starts at 65; `possible_match` starts at 45;
+below that is `poor_match`. Confidence below 0.25 yields
+`insufficient_information` regardless of fit. Strong/good results are queued;
+possible and insufficient-information results remain in `/review`; poor technical
+matches are filtered. Geography and work authorization remain separate eligibility
+checks.
+
+Confidence is calculated separately as `0.22 + min(unique description words / 400,
+0.28) + min(requirement groups / 8, 0.22) + min(responsibility sentences / 6,
+0.16) + role confidence * 0.16`, capped to 0.05–0.98. With no description it is
+capped at 0.25; a mandatory sentence whose skill could not be extracted subtracts
+0.08. The input counts and caps are persisted in the scoring breakdown.
+
+Requirement extraction is deliberately conservative and deterministic. It uses a
+known technology lexicon, sentence-level cues such as “required”, “preferred”,
+“a plus”, negation phrases, and explicit `or`/recognized slash alternatives.
+Environment mentions are not treated as candidate requirements. Unusual wording,
+long cross-sentence qualifications, implicit requirements, and unfamiliar tools
+can remain unknown or be misclassified; the source sentence and extraction result
+are persisted for review. No LLM or AI provider is used to set V2 fit. The legacy
+`ai.enabled` settings do not alter V2 scores.
 
 ---
 
@@ -113,13 +166,15 @@ Every job message has **✅ Applied / ⏭ Skip / ⭐ Save**, plus **↩️ Undo*
 
 ```bash
 python -m jobradar stats     # what got filtered and why, source health
-# edit config.yaml (filters / scoring / min_score)
-python -m jobradar rescore   # re-apply rules to everything not sent yet
+# edit config.yaml or candidate_profile.yaml
+python -m jobradar rescore   # reevaluate pending jobs; sent/application history is preserved
 python -m jobradar run
 ```
 
 Tips:
-- **Too much noise?** Raise `scoring.min_score` or add patterns to `filters.title_exclude`.
+- **Too much noise?** Raise `matching.thresholds.good_match` / `strong_match`, or improve
+  the candidate profile's proficiency and evidence descriptions. Title patterns are
+  retained for legacy evaluator callers but do not gate production V2 discovery.
 - **Missing good jobs?** Check `stats` → "top filter reasons". If `title: no include match`
   is huge, widen `filters.title_include`.
 - Add a country: copy a block in `targets`. Indeed needs `country_indeed`

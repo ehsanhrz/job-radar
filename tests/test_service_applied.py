@@ -4,8 +4,8 @@ import threading
 
 from jobradar.bot import APPLIED_PAGE_SIZE, _applied_page, handle_update
 from jobradar.config import Settings
-from jobradar.db import DB
-from jobradar.service import RunCoordinator, run_service
+from jobradar.db import DB, now
+from jobradar.service import RunCoordinator, run_service, seconds_until_next_run
 
 
 def applied_db(path, count):
@@ -90,7 +90,7 @@ def test_scheduler_continues_after_run_exception():
     assert len(calls) == 2
 
 
-def test_service_starts_one_poller_and_runs_immediately_and_recurring(tmp_path):
+def test_service_starts_one_poller_runs_a_fresh_db_and_recurs(tmp_path):
     stopped = threading.Event()
     pollers, runs, waits = [], [], []
 
@@ -108,12 +108,41 @@ def test_service_starts_one_poller_and_runs_immediately_and_recurring(tmp_path):
 
     settings = Settings({"schedule": {"interval_hours": 1, "jitter_minutes": 0}}, "t", "42",
                         None, [], tmp_path / "service.db")
-    run_service(settings, stopped, bot_runner=bot, run=lambda: runs.append(1),
+    def run():
+        runs.append(1)
+        DB(settings.db_path).set_meta("last_run_at", now())
+
+    run_service(settings, stopped, bot_runner=bot, run=run,
                 wait=wait, jitter=lambda a, b: 0)
     assert pollers == ["jobradar-telegram-poller"]
-    assert len(runs) == 2
+    assert len(runs) == 1
     assert len(waits) == 2 and all(d == 3600 for d in waits)
     assert stopped.is_set()
+
+
+def test_service_restart_uses_persisted_last_run_time(tmp_path):
+    path = tmp_path / "restart.db"
+    db = DB(path)
+    db.set_meta("last_run_at", now())
+    assert 3590 <= seconds_until_next_run(db, 3600, 0, lambda a, b: 0) <= 3600
+
+    stopped, waits, runs = threading.Event(), [], []
+
+    def bot(settings, coordinator, stop_event, ready_event):
+        ready_event.set()
+        stop_event.wait(2)
+
+    def wait(delay):
+        waits.append(delay)
+        stopped.set()
+        return True
+
+    settings = Settings({"schedule": {"interval_hours": 1, "jitter_minutes": 0}}, "t", "42",
+                        None, [], path)
+    run_service(settings, stopped, bot_runner=bot, run=lambda: runs.append(1),
+                wait=wait, jitter=lambda a, b: 0)
+    assert runs == []
+    assert len(waits) == 1 and 3590 <= waits[0] <= 3600
 
 
 def test_run_command_uses_coordinator_response(tmp_path):

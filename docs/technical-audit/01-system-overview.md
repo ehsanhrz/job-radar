@@ -6,21 +6,23 @@ The application is Python 3.10+ according to README, packaged as a small source 
 
 | Area | Responsibility | Evidence |
 |---|---|---|
-| CLI and process startup | Commands `run`, `loop`, `bot`, `stats`, `rescore`, Telegram setup commands | `jobradar/__main__.py:22-137` |
+| CLI and process startup | Commands `run`, `loop`, `bot`, `service`, `stats`, `rescore`, `explain`, Telegram setup commands | `jobradar/__main__.py` |
 | Settings | YAML config, `.env`, proxies, DB path | `jobradar/config.py:13-45` |
 | Domain-shaped record | `Job`, normalization, URL ID, duplicate fingerprint | `jobradar/models.py:9-57` |
 | Collectors | JobSpy board calls, Arbeitnow API, aggregate result/health | `jobradar/collectors/` |
-| Matching | Regex filters, weighted score, queue/low/filtered result | `jobradar/filters.py:30-105` |
-| Orchestration | Collection, health persistence, ingest, delivery, watchdog | `jobradar/pipeline.py:15-120` |
+| Matching | Versioned deterministic role/requirement/skill/seniority evaluation plus legacy compatibility filters | `jobradar/matching.py`, `jobradar/filters.py` |
+| Optional legacy AI | OpenAI-compatible structured second opinion, circuit breaker, evidence validation | `jobradar/ai.py` |
+| Orchestration | Collection, health persistence, V2 ingestion, delivery, watchdog | `jobradar/pipeline.py` |
+| Service runtime | Single poller, non-overlapping manual/scheduled coordinator, persisted schedule | `jobradar/service.py` |
 | Persistence | SQLite schema and direct SQL operations | `jobradar/db.py:10-170` |
 | User interaction | Telegram HTTP wrapper, message rendering, callbacks, commands | `jobradar/telegram.py`, `jobradar/bot.py` |
 | Tests | Mocked collector, pipeline, DB, Telegram client behavior | `tests/test_pipeline.py:58-263` |
 
-There is no `.github/` directory or checked-in CI workflow. No AI package/provider SDK appears in `requirements.txt`; no AI provider or prompt code appears in `jobradar/`.
+There is no `.github/` directory or checked-in CI workflow. `ai.py` uses `requests` against an OpenAI-compatible endpoint rather than a provider SDK. It is retained as a legacy optional review component; Matching Engine V2 does not invoke it.
 
 ## Entry points and runtime modes
 
-`main()` in `jobradar/__main__.py:111-137` parses arguments, initializes logging, loads settings, and dispatches a command. `run` calls `pipeline.run_once`; `loop` calls it indefinitely after a configured delay with jitter; `bot` starts Telegram long polling. Docker Compose runs two services over the same `./data` directory: one scheduled worker and one bot (`docker-compose.yml:3-20`). The bot may start a run in a daemon thread after `/run` (`jobradar/bot.py:86-103`). Its lock prevents duplicate manual runs only inside that bot process; it does not coordinate with the worker process.
+`main()` initializes logging, loads settings, and dispatches a command. `run` calls `pipeline.run_once`; `loop` remains the legacy command; `bot` starts Telegram long polling; and `service` is the production command. `service` starts exactly one poller plus `RunCoordinator`, which prevents overlap between manual `/run` and scheduled work. The persisted `meta.last_run_at` timestamp drives restart scheduling: a fresh database runs immediately, while a service restart waits for the remaining configured interval. Docker defaults to `python -m jobradar service`; Compose is optional local development support.
 
 ## Dependency and boundary assessment
 
@@ -30,7 +32,7 @@ Graphify on the current checkout produced 191 nodes and 469 edges across 10 comm
 
 ## Config and deployment
 
-`load_settings` reads YAML and environment variables, creates the DB parent directory, and defaults to `data/jobradar.db` (`jobradar/config.py:25-45`). Secrets are expected in `.env` and `.env` is ignored by `.gitignore`; Compose injects that file into both containers. `.env.example` documents Telegram credentials, proxies, and paths without real credentials. Docker uses an unpinned base image tag and pip installs runtime requirements without a lockfile. Compose has restart policies but no health checks, resource limits, or explicit graceful-shutdown configuration.
+`load_settings` reads YAML and environment variables, creates the DB parent directory, and defaults to `data/jobradar.db`. Secrets are expected in `.env` and are supplied at container runtime. Docker starts one process, persists `/app/data` through a volume, and handles SIGTERM/SIGINT through the service command. Docker still uses an unpinned base image tag and pip installs runtime requirements without a lockfile.
 
 ## Sources actually enabled
 

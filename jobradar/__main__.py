@@ -23,7 +23,7 @@ def _setup_logging(verbose: bool) -> None:
 
 def cmd_run(args, settings) -> None:
     from .pipeline import run_once
-    run_once(settings, dry_run=args.dry_run, process_updates=not args.no_updates)
+    run_once(settings, dry_run=args.dry_run, process_updates=not args.no_updates, trigger="cli")
 
 
 def cmd_loop(args, settings) -> None:

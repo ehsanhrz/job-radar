@@ -4,18 +4,46 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import date
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 def _norm(text: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
 
+_TRACKING_PARAMS = {
+    "fbclid", "gclid", "igshid", "mc_cid", "mc_eid", "mkt_tok", "ref", "refid",
+    "ref_id", "source", "src", "trk", "trackingid", "tracking_id", "utm_campaign",
+    "utm_content", "utm_medium", "utm_source", "utm_term",
+}
+
+
 def _clean_url(url: str) -> str:
     # drop tracking query strings so the same posting isn't stored twice
     url = (url or "").strip()
-    if "linkedin.com/jobs/view" in url:
-        url = url.split("?")[0]
-    return url.rstrip("/")
+    if not url:
+        return ""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url.rstrip("/")
+    path = parts.path or ""
+    host = (parts.hostname or "").lower()
+    if host.endswith("linkedin.com") and "/jobs/view/" in path:
+        # LinkedIn view URLs are stable by path; query params are tracking/session.
+        return urlunsplit((parts.scheme.lower() or "https", parts.netloc.lower(), path.rstrip("/"), "", ""))
+    kept = []
+    for key, value in parse_qsl(parts.query, keep_blank_values=True):
+        low = key.lower()
+        if low.startswith("utm_") or low in _TRACKING_PARAMS:
+            continue
+        kept.append((key, value))
+    query = urlencode(kept, doseq=True)
+    scheme = (parts.scheme or "https").lower()
+    netloc = parts.netloc.lower()
+    path = re.sub(r"/{2,}", "/", path).rstrip("/")
+    fragment = "" if not parts.fragment or parts.fragment.lower() in {"", "apply", "job", "content"} else parts.fragment
+    return urlunsplit((scheme, netloc, path, query, fragment))
 
 
 @dataclass

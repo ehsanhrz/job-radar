@@ -10,7 +10,8 @@ from datetime import date, datetime
 from typing import Any, Callable
 
 from ..models import Job
-from .base import CollectResult
+from .base import (CollectResult, cooldown_active_until, get_state, record_attempt,
+                   record_failure, record_success, should_skip_fetch)
 
 log = logging.getLogger(__name__)
 
@@ -109,7 +110,7 @@ def make_linkedin_details_fn(proxies: list[str]):
 
 
 def collect(cfg: dict, proxies: list[str], scrape_fn=None, sleep_fn=time.sleep,
-            want_details: Callable[[Job], bool] | None = None, details_fn=None) -> CollectResult:
+            want_details: Callable[[Job], bool] | None = None, details_fn=None, db=None) -> CollectResult:
     """cfg = the whole config dict. scrape_fn / details_fn are injectable for tests.
 
     LinkedIn is scraped in two phases to avoid 429s: search pages only (cheap),
@@ -130,7 +131,9 @@ def collect(cfg: dict, proxies: list[str], scrape_fn=None, sleep_fn=time.sleep,
     result = CollectResult()
     first_call = True
     blocked: set[str] = set()
+    cooldown_skipped: set[str] = set()
     linkedin_jobs: list[Job] = []
+    cooldown_minutes = int(scrape_cfg.get("cooldown_minutes_on_block", 60))
 
     for target in targets:
         if not target.get("enabled", True):
@@ -143,6 +146,17 @@ def collect(cfg: dict, proxies: list[str], scrape_fn=None, sleep_fn=time.sleep,
             for site in sites:
                 if site in blocked:
                     continue
+                # persistent cooldown from prior runs
+                if db is not None:
+                    st = get_state(db, site)
+                    until = cooldown_active_until(st)
+                    if until:
+                        blocked.add(site)
+                        if site not in cooldown_skipped:
+                            cooldown_skipped.add(site)
+                            result.skip(site, "cooldown", cooldown_until=until)
+                            log.info("%s skipped due to persistent cooldown until %s", site, until)
+                        continue
                 # one site per call -> clean per-source health + errors
                 if not first_call:
                     sleep_fn(random.uniform(delay_lo, delay_hi))
@@ -179,6 +193,7 @@ def collect(cfg: dict, proxies: list[str], scrape_fn=None, sleep_fn=time.sleep,
                     result.call(site, error=f"{type(e).__name__}: {e}")
                     if any(m in str(e) for m in BLOCK_MARKERS):
                         blocked.add(site)
+                        record_failure(db, site, f"{type(e).__name__}: {e}", cooldown_minutes=cooldown_minutes)
                     continue
 
                 errors = (getattr(df, "attrs", {}) or {}).get("errors") or {}
@@ -196,6 +211,7 @@ def collect(cfg: dict, proxies: list[str], scrape_fn=None, sleep_fn=time.sleep,
                 if err and any(m in str(err) for m in BLOCK_MARKERS):
                     blocked.add(site)
                     log.warning("%s is rate-limiting us: skipping it for the rest of this run", site)
+                    record_failure(db, site, str(err), cooldown_minutes=cooldown_minutes)
 
     if linkedin_jobs and scrape_cfg.get("fetch_description", True):
         _linkedin_details_phase(linkedin_jobs, scrape_cfg, proxies, want_details, details_fn,

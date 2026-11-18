@@ -115,13 +115,13 @@ def test_report_command_sends_file(tmp_path):
 
 def test_run_once_records_runs(tmp_path, monkeypatch):
     from jobradar import pipeline
-    monkeypatch.setattr(pipeline, "collect_all", lambda cfg, proxies, want_details=None: CollectResult())
+    monkeypatch.setattr(pipeline, "collect_all", lambda cfg, proxies, want_details=None, db=None: CollectResult())
     s = Settings(raw={**CFG, "telegram": {"send_run_summary": False}}, telegram_token="t",
                  telegram_chat_id="42", telegram_proxy=None, scrape_proxies=[], db_path=tmp_path / "x.db")
     monkeypatch.setattr(pipeline, "Telegram", lambda *a, **k: FakeTG())
     pipeline.run_once(s, process_updates=False, trigger="manual")
     rep = build_report(DB(tmp_path / "x.db"), CFG, "1h")
-    assert len(rep["runs"]) == 1 and rep["runs"][0]["state"] == "done" and rep["runs"][0]["trigger"] == "manual"
+    assert len(rep["runs"]) == 1 and rep["runs"][0]["state"] == "done" and rep["runs"][0]["trigger"] == "manual"
 
 
 def test_caption_summarises(tmp_path):

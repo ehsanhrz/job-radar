@@ -9,9 +9,11 @@ drops "USA only" etc.; HN posts that don't say REMOTE get is_remote=False.
 """
 from __future__ import annotations
 
+import hashlib
 import html
 import logging
 import re
+import time
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -20,7 +22,8 @@ from typing import Any
 import requests
 
 from ..models import Job
-from .base import CollectResult
+from .base import (CollectResult, cooldown_active_until, get_state, record_attempt,
+                   record_failure, record_success, should_skip_fetch, utcnow)
 
 log = logging.getLogger(__name__)
 UA = {"User-Agent": "job-radar/1.0 (personal job search; github.com/ehsanhrz/job-radar)"}
@@ -28,7 +31,7 @@ TAG_RE = re.compile(r"<[^>]+>")
 
 HN_SEARCH = "https://hn.algolia.com/api/v1/search_by_date"
 HN_ITEM = "https://hn.algolia.com/api/v1/items/{id}"
-REMOTEOK = "https://remoteok.com/api"
+REMOTEOK = "https://remoteok.com/api"
 
 
 def _text(s: str | None) -> str:
@@ -86,17 +89,21 @@ def parse_hn_comment(c: dict) -> Job | None:
     )
 
 
-def collect_hn(session: requests.Session, result: CollectResult) -> list[Job]:
-    r = session.get(HN_SEARCH, params={"tags": "story,author_whoishiring", "query": "who is hiring",
-                                       "hitsPerPage": 5}, headers=UA, timeout=30)
+def collect_hn(session: requests.Session, result: CollectResult | None = None, state: dict | None = None, *, return_meta: bool = False):
+    r = _http_get(session, HN_SEARCH, params={"tags": "story,author_whoishiring", "query": "who is hiring",
+                                             "hitsPerPage": 5}, timeout=30)
     r.raise_for_status()
-    tid = latest_hn_thread_id(r.json())
+    search = r.json()
+    tid = latest_hn_thread_id(search)
     if not tid:
         raise ValueError("no 'Who is hiring?' thread found")
-    r = session.get(HN_ITEM.format(id=tid), headers=UA, timeout=60)
+    r = _http_get(session, HN_ITEM.format(id=tid), timeout=60)
     r.raise_for_status()
-    jobs = [j for j in map(parse_hn_comment, r.json().get("children") or []) if j]
-    return jobs
+    thread = r.json()
+    children = thread.get("children") or []
+    jobs = [j for j in map(parse_hn_comment, children) if j]
+    meta = {"calls": 2, "raw_found": len(children), "checkpoint": {"thread_id": tid, "last_item_count": len(children)}}
+    return (jobs, meta) if return_meta else jobs
 
 
 # ---------------- RemoteOK ----------------
@@ -124,10 +131,20 @@ def parse_remoteok(items: list) -> list[Job]:
     return jobs
 
 
-def collect_remoteok(session: requests.Session, result: CollectResult) -> list[Job]:
-    r = session.get(REMOTEOK, headers=UA, timeout=30)
+def collect_remoteok(session: requests.Session, result: CollectResult | None = None, state: dict | None = None, *, return_meta: bool = False):
+    r = _http_get(session, REMOTEOK, timeout=30, state=state, conditional=True)
+    status = getattr(r, "status_code", 200)
+    headers = getattr(r, "headers", {}) or {}
+    if status == 304:
+        jobs, meta = [], {"calls": 1, "raw_found": 0, "not_modified": True,
+                          "etag": headers.get("ETag"), "last_modified": headers.get("Last-Modified")}
+        return (jobs, meta) if return_meta else jobs
     r.raise_for_status()
-    return parse_remoteok(r.json())
+    data = r.json()
+    jobs = parse_remoteok(data)
+    meta = {"calls": 1, "raw_found": max(0, len(data) - 1) if isinstance(data, list) else len(jobs),
+            "etag": headers.get("ETag"), "last_modified": headers.get("Last-Modified")}
+    return (jobs, meta) if return_meta else jobs
 
 
 # ---------------- We Work Remotely ----------------
@@ -154,41 +171,143 @@ def parse_wwr_rss(xml_text: str) -> list[Job]:
     return jobs
 
 
-def collect_wwr(session: requests.Session, result: CollectResult, urls: list[str]) -> list[Job]:
+def collect_wwr(session: requests.Session, result: CollectResult | None = None, urls: list[str] | None = None, state: dict | None = None, *, return_meta: bool = False):
+    if urls is None and isinstance(result, list):
+        # extremely defensive; not expected
+        urls, result = result, None
+    urls = urls or []
     jobs, seen = [], set()
+    calls = 0
+    raw_found = 0
+    not_modified_all = True if urls else False
+    checkpoint = (state or {}).get("checkpoint") or {}
+    if not isinstance(checkpoint, dict):
+        checkpoint = {}
+    feed_state = checkpoint.get("feeds") or {}
+    if not isinstance(feed_state, dict):
+        feed_state = {}
+    new_feed_state = dict(feed_state)
     for url in urls:
-        r = session.get(url, headers=UA, timeout=30)
+        calls += 1
+        st = feed_state.get(url) if isinstance(feed_state.get(url), dict) else None
+        r = _http_get(session, url, timeout=30, state=st, conditional=True)
+        status = getattr(r, "status_code", 200)
+        headers = getattr(r, "headers", {}) or {}
+        if status == 304:
+            new_feed_state[url] = {k: v for k, v in {
+                "etag": headers.get("ETag") or (st or {}).get("etag"),
+                "last_modified": headers.get("Last-Modified") or (st or {}).get("last_modified"),
+            }.items() if v}
+            continue
+        not_modified_all = False
         r.raise_for_status()
-        for j in parse_wwr_rss(r.text):
+        text = getattr(r, "text", "")
+        parsed = parse_wwr_rss(text)
+        raw_found += len(parsed)
+        for j in parsed:
             if j.url not in seen:
                 seen.add(j.url)
                 jobs.append(j)
-    return jobs
+        new_feed_state[url] = {k: v for k, v in {
+            "etag": headers.get("ETag"),
+            "last_modified": headers.get("Last-Modified"),
+            "hash": hashlib.sha1((text or "").encode("utf-8", "ignore")).hexdigest()[:16],
+        }.items() if v}
+    meta = {"calls": calls, "raw_found": raw_found, "not_modified": bool(urls) and not_modified_all and calls > 0,
+            "checkpoint": {"feeds": new_feed_state}}
+    return (jobs, meta) if return_meta else jobs
+
+
+def _conditional_headers(state: dict | None) -> dict:
+    headers = {}
+    if not state:
+        return headers
+    if state.get("etag"):
+        headers["If-None-Match"] = state["etag"]
+    if state.get("last_modified"):
+        headers["If-Modified-Since"] = state["last_modified"]
+    return headers
+
+
+def _http_get(session: requests.Session, url: str, *, params=None, timeout=30, state: dict | None = None,
+              conditional: bool = False):
+    headers = dict(UA)
+    if conditional:
+        headers.update(_conditional_headers(state))
+    return session.get(url, params=params, headers=headers, timeout=timeout)
 
 
 # ---------------- entry point ----------------
-def collect(cfg: dict, session: requests.Session | None = None) -> CollectResult:
+def collect(cfg: dict, session: requests.Session | None = None, db=None) -> CollectResult:
     fcfg = (cfg.get("extra_sources") or {}).get("feeds") or {}
     result = CollectResult()
     if not fcfg.get("enabled", False):
         return result
     session = session or requests.Session()
-    plan = []
+    intervals = fcfg.get("min_fetch_interval_hours") or {}
+    cooldowns = fcfg.get("cooldown_minutes_on_error") or {}
+
+    def interval_for(name: str, default: float) -> float:
+        try:
+            return float(intervals.get(name, fcfg.get("default_min_fetch_interval_hours", default)))
+        except (TypeError, ValueError):
+            return default
+
+    def cooldown_for(name: str, default: int = 30) -> int:
+        try:
+            return int(cooldowns.get(name, fcfg.get("default_cooldown_minutes", default)))
+        except (TypeError, ValueError):
+            return default
+
+    def run_feed(name: str, fn, *, default_interval: float, conditional: bool = False):
+        state = get_state(db, name)
+        skip, reason = should_skip_fetch(state, interval_for(name, default_interval))
+        if skip:
+            result.skip(name, reason or "skipped", cooldown_until=cooldown_active_until(state))
+            log.info("%s skipped: %s", name, reason)
+            return
+        started = time.perf_counter()
+        record_attempt(db, name)
+        try:
+            jobs, meta = fn(state if conditional else None)
+            duration = round(time.perf_counter() - started, 3)
+            meta = meta or {}
+            not_modified = bool(meta.pop("not_modified", False))
+            result.jobs.extend(jobs)
+            h = result.health[name]
+            h.calls = int(meta.pop("calls", 1))
+            h.found = len(jobs)
+            h.errors = 0
+            h.duration_sec = duration
+            h.raw_found = int(meta.pop("raw_found", len(jobs)))
+            h.unique_found = len(jobs)
+            h.details = {"not_modified": not_modified, **meta} if (not_modified or meta) else {"not_modified": False}
+            checkpoint = (state or {}).get("checkpoint") or {}
+            if not isinstance(checkpoint, dict):
+                checkpoint = {}
+            checkpoint.update(meta.get("checkpoint") or {})
+            checkpoint["last_fetch_at"] = utcnow().isoformat(timespec="seconds")
+            record_success(db, name, etag=meta.get("etag") or (state or {}).get("etag"),
+                           last_modified=meta.get("last_modified") or (state or {}).get("last_modified"),
+                           checkpoint=checkpoint)
+            log.info("%s -> %d jobs%s", name, len(jobs), " (304/not modified)" if not_modified else "")
+        except Exception as e:  # noqa: BLE001 - one feed failing must not stop the run
+            duration = round(time.perf_counter() - started, 3)
+            err = f"{type(e).__name__}: {e}"[:300]
+            log.warning("%s failed: %s", name, err)
+            h = result.health[name]
+            h.calls = 1
+            h.found = 0
+            h.errors = 1
+            h.last_error = err
+            h.duration_sec = duration
+            record_failure(db, name, err, cooldown_minutes=cooldown_for(name))
+
     if fcfg.get("hn", True):
-        plan.append(("hn", lambda: collect_hn(session, result)))
+        run_feed("hn", lambda st: collect_hn(session, result, st, return_meta=True), default_interval=6)
     if fcfg.get("remoteok", True):
-        plan.append(("remoteok", lambda: collect_remoteok(session, result)))
+        run_feed("remoteok", lambda st: collect_remoteok(session, result, st, return_meta=True), default_interval=2, conditional=True)
     wwr_urls = fcfg.get("wwr_rss") or []
     if wwr_urls:
-        plan.append(("wwr", lambda: collect_wwr(session, result, wwr_urls)))
-    for name, fn in plan:
-        try:
-            jobs = fn()
-        except Exception as e:  # noqa: BLE001 - one feed failing must not stop the run
-            log.warning("%s failed: %s", name, e)
-            result.call(name, error=f"{type(e).__name__}: {e}"[:300])
-            continue
-        result.jobs.extend(jobs)
-        result.call(name, found=len(jobs))
-        log.info("%s -> %d jobs", name, len(jobs))
-    return result
+        run_feed("wwr", lambda st: collect_wwr(session, result, wwr_urls, st, return_meta=True), default_interval=2, conditional=True)
+    return result

@@ -21,9 +21,10 @@ import requests
 from bs4 import BeautifulSoup
 
 from ..models import Job
-from .base import CollectResult
+from .base import (CollectResult, cooldown_active_until, get_state, record_attempt,
+                   record_failure, record_success, should_skip_fetch)
 
-log = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/130.0 Safari/537.36")
@@ -288,33 +289,46 @@ def _fetch_detail(session, board: str, job: Job) -> dict:
 
 
 def collect(cfg: dict, want_details: Callable[[Job], bool] | None = None,
-            session: requests.Session | None = None, sleep_fn=time.sleep) -> CollectResult:
+            session: requests.Session | None = None, sleep_fn=time.sleep, db=None) -> CollectResult:
     result = CollectResult()
     sources = cfg.get("extra_sources") or {}
     for board, spec in BOARDS.items():
         bcfg = sources.get(board) or {}
         if not bcfg.get("enabled", False):
             continue
+        state = get_state(db, board)
+        min_interval = float(bcfg.get("min_fetch_interval_hours", bcfg.get("default_min_fetch_interval_hours", 2)))
+        skip_fetch, reason = should_skip_fetch(state, min_interval)
+        if skip_fetch:
+            result.skip(board, reason or "skipped", cooldown_until=cooldown_active_until(state))
+            log.info("%s skipped: %s", board, reason)
+            continue
         sess = session or make_session(bcfg)
+        started = time.perf_counter()
+        record_attempt(db, board)
         jobs: list[Job] = []
         blocked = False
+        blocked_reason = None
+        calls = 0
+        raw_found = 0
         for i, url in enumerate(bcfg.get("list_urls") or []):
             if i:
                 sleep_fn(random.uniform(2, 5))
+            calls += 1
             try:
                 found = spec["parse_list"](_get(sess, url))
             except Blocked as e:
-                result.call(board, error=f"{url}: {e}")
-                log.warning("%s blocked on %s: skipping it for this run", board, url)
                 blocked = True
+                blocked_reason = f"{url}: {e}"
+                log.warning("%s blocked on %s: skipping it for this run", board, url)
                 break
             except Exception as e:  # noqa: BLE001
-                result.call(board, error=f"{url}: {type(e).__name__}: {e}")
                 log.warning("%s list %s failed: %s", board, url, e)
+                blocked_reason = blocked_reason or f"{url}: {type(e).__name__}: {e}"
                 continue
+            raw_found += len(found)
             fresh = [j for j in found if j.url not in {x.url for x in jobs}]
             jobs.extend(fresh)
-            result.call(board, found=len(fresh))
             log.info("%s | %s -> %d jobs", board, url, len(fresh))
 
         # details: new + relevant + not clearly on-site, slowly
@@ -322,15 +336,18 @@ def collect(cfg: dict, want_details: Callable[[Job], bool] | None = None,
         todo = todo[: int(bcfg.get("max_details", 20))]
         lo, hi = bcfg.get("detail_delay_sec", [3, 7])
         misses = 0
+        detail_error = None
         for k, job in enumerate(todo):
             if blocked:
                 break
             if k:
                 sleep_fn(random.uniform(lo, hi))
+            calls += 1
             try:
                 d = _fetch_detail(sess, board, job)
             except Blocked as e:
-                result.call(board, error=f"job pages: {e}")
+                blocked = True
+                detail_error = f"job pages: {e}"
                 break
             except Exception as e:  # noqa: BLE001
                 d = {}
@@ -341,7 +358,7 @@ def collect(cfg: dict, want_details: Callable[[Job], bool] | None = None,
             else:
                 misses += 1
                 if misses >= 3:
-                    result.call(board, error="job pages returned nothing 3x; stopped details")
+                    detail_error = "job pages returned nothing 3x; stopped details"
                     break
             for key in ("company", "date_posted"):
                 if d.get(key) and not getattr(job, key):
@@ -350,5 +367,24 @@ def collect(cfg: dict, want_details: Callable[[Job], bool] | None = None,
                 job.is_remote = True
         if todo:
             log.info("%s: fetched %d job pages", board, len(todo))
+
+        duration = round(time.perf_counter() - started, 3)
+        err = detail_error or blocked_reason
+        h = result.health[board]
+        h.calls = calls
+        h.found = len(jobs)
+        h.raw_found = raw_found
+        h.unique_found = len(jobs)
+        h.errors = 1 if (blocked or err) and not jobs else 0
+        h.last_error = err[:500] if err else None
+        h.duration_sec = duration
+        h.details = {"raw_found": raw_found, "unique_in_response": len(jobs), "blocked": blocked}
+
+        cooldown_minutes = int(bcfg.get("cooldown_minutes_on_error", bcfg.get("cooldown_minutes_on_block", 60 if blocked else 30)))
+        if blocked or (err and not jobs):
+            record_failure(db, board, err or "blocked", cooldown_minutes=cooldown_minutes)
+        else:
+            record_success(db, board, checkpoint={"last_raw_found": raw_found, "last_unique": len(jobs)},
+                           last_error=err[:500] if err else None)
         result.jobs.extend(jobs)
-    return result
+    return result

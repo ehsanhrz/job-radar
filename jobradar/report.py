@@ -109,24 +109,36 @@ def build_report(db: DB, cfg: dict, period: str | None = "24h") -> dict:
             a["calls"] += h.get("calls", 0)
             a["found"] += h.get("found", 0)
             a["errors"] += h.get("errors", 0)
-            a["zero_runs"] += h.get("found", 0) == 0
+            a["skipped"] = a.get("skipped", 0) + int(h.get("skipped") or 0)
+            a["raw_found"] = a.get("raw_found", 0) + int(h.get("raw_found") or h.get("found") or 0)
+            a["unique_found"] = a.get("unique_found", 0) + int(h.get("unique_found") or h.get("found") or 0)
+            a["zero_runs"] += h.get("found", 0) == 0 and not h.get("skipped")
             a["last_error"] = h.get("last_error") or a["last_error"]
+            if h.get("cooldown_until"):
+                a["cooldown_until"] = h.get("cooldown_until")
         ai = summ.get("ai") or {}
         for k in ("reviewed", "vetoed", "promoted", "ok", "failed"):
             ai_tot[k] += int(ai.get(k) or 0)
         if ai.get("off"):
             ai_off[ai["off"]] += 1
     funnel["found"] = sum(a["found"] for a in src_agg.values())
+    funnel["raw_found"] = sum(a.get("raw_found", a["found"]) for a in src_agg.values())
+    funnel["unique_found"] = sum(a.get("unique_found", a["found"]) for a in src_agg.values())
+    funnel["skipped_source_runs"] = sum(a.get("skipped", 0) for a in src_agg.values())
 
     for name, a in src_agg.items():
-        if a["found"] == 0 and a["errors"]:
+        if a.get("cooldown_until"):
+            a["status"] = "cooldown"
+        elif a["found"] == 0 and a["errors"]:
             a["status"] = "blocked_or_failing"
+        elif a["found"] == 0 and a.get("skipped"):
+            a["status"] = "skipped"
         elif a["found"] == 0:
             a["status"] = "empty"
         elif a["errors"]:
             a["status"] = "degraded"
         else:
-            a["status"] = "ok"
+            a["status"] = "ok"
 
     def jobs(sql: str, args: tuple = (), limit: int = 200) -> list[dict]:
         return [_job(r) for r in q(sql + f" LIMIT {int(limit)}", args).fetchall()]
@@ -146,11 +158,17 @@ def build_report(db: DB, cfg: dict, period: str | None = "24h") -> dict:
             outcome[st] += 1
         else:                       # sent / applied / skipped / saved
             outcome["reached_you"] += 1
-    funnel = Counter({"found": funnel["found"], "duplicate": funnel["duplicate"],
-                      "new": sum(outcome.values()),
-                      **{k: outcome[k] for k in ("filtered", "ai_vetoed", "low", "queued", "reached_you")},
-                      # every job sent in the period, including ones that were queued before it
-                      "sent": q("SELECT COUNT(*) c FROM jobs WHERE sent_at >= ?", (since_s,)).fetchone()["c"]})
+    funnel = Counter({
+        "found": funnel["found"],
+        "raw_found": funnel.get("raw_found", funnel["found"]),
+        "unique_found": funnel.get("unique_found", funnel["found"]),
+        "skipped_source_runs": funnel.get("skipped_source_runs", 0),
+        "duplicate": funnel["duplicate"],
+        "new": sum(outcome.values()),
+        **{k: outcome[k] for k in ("filtered", "ai_vetoed", "low", "queued", "reached_you")},
+        # every job sent in the period, including ones that were queued before it
+        "sent": q("SELECT COUNT(*) c FROM jobs WHERE sent_at >= ?", (since_s,)).fetchone()["c"],
+    })
 
     report = {
         "report": {
@@ -163,10 +181,18 @@ def build_report(db: DB, cfg: dict, period: str | None = "24h") -> dict:
         "totals_all_time": db.stats(),
         "funnel": {**dict(funnel), "filter_reasons": dict(filtered_reasons.most_common(20))},
         "sources": dict(src_agg),
+        "collection": {
+            "raw_found": funnel.get("raw_found", 0),
+            "unique_found": funnel.get("unique_found", 0),
+            "duplicates_in_period": funnel.get("duplicate", 0),
+            "new_in_period": funnel.get("new", 0),
+            "queued_now": q("SELECT COUNT(*) c FROM jobs WHERE status='queued'").fetchone()["c"],
+            "delivered_sent_in_period": funnel.get("sent", 0),
+        },
         "ai": {"model": os.getenv("AI_MODEL") or None, **dict(ai_tot),
                "off_reasons": dict(ai_off)},
         "runs": runs,
-        "jobs": {
+        "jobs": {
             "sent_in_period": jobs("SELECT * FROM jobs WHERE sent_at >= ? ORDER BY sent_at DESC", (since_s,)),
             "queued_now": jobs("SELECT * FROM jobs WHERE status='queued' ORDER BY score DESC"),
             "applied_all_time": jobs("SELECT * FROM jobs WHERE status='applied' ORDER BY updated_at DESC"),

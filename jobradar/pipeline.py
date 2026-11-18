@@ -49,7 +49,19 @@ def ingest(db: DB, evaluator: Evaluator, result: CollectResult) -> dict[str, int
 
 def record_health(db: DB, result: CollectResult) -> None:
     for source, h in result.health.items():
-        db.record_source_run(source, h.calls, h.found, h.errors, h.last_error)
+        try:
+            db.record_source_run(
+                source, h.calls, h.found, h.errors, h.last_error,
+                skipped=getattr(h, "skipped", 0) or 0,
+                duration_sec=getattr(h, "duration_sec", None),
+                raw_found=getattr(h, "raw_found", None),
+                unique_found=getattr(h, "unique_found", None),
+                cooldown_until=getattr(h, "cooldown_until", None),
+                details=getattr(h, "details", None),
+            )
+        except TypeError:
+            # compatibility with older DB mocks/stubs in tests
+            db.record_source_run(source, h.calls, h.found, h.errors, h.last_error)
 
 
 def watchdog(db: DB, result: CollectResult, cfg: dict, tg: Telegram | None) -> list[str]:
@@ -211,7 +223,7 @@ def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = 
     evaluator = MatchingEngine(cfg)
     _upgrade_pending_evaluations(db, evaluator)
     result = collect_all(cfg, settings.scrape_proxies,
-                         want_details=lambda job: not db.seen(job) and evaluator.title_ok(job))
+                         want_details=lambda job: not db.seen(job) and evaluator.title_ok(job), db=db)
     # company boards found in those jobs (and earlier ones), checked directly; never breaks the run
     from .collectors import ats
     # keep only postings that could be sent: queued, or low but within the AI review margin
@@ -228,21 +240,42 @@ def run_once(settings: Settings, dry_run: bool = False, process_updates: bool = 
     sent = send_queued(db, tg, cfg, dry_run, evaluation_version=EVALUATION_VERSION)
     alerts = watchdog(db, result, cfg, tg)
 
+    raw_found = 0
+    unique_found = 0
+    for h in result.health.values():
+        raw_found += int(getattr(h, "raw_found", None) or h.found or 0)
+        unique_found += int(getattr(h, "unique_found", None) or h.found or 0)
+    fetched_unique = len({getattr(j, "id", None) or getattr(j, "url", None) for j in result.jobs})
     summary = {
         **counts,
         "sent": sent,
         "still_queued": len(db.queued(10_000)),
         "minutes": round((time.time() - started) / 60, 1),
         "ai": ai,
-        "sources": {k: f"{h.found} jobs / {h.calls} calls / {h.errors} err" for k, h in result.health.items()},
+        "raw_found": raw_found,
+        "fetched_unique": fetched_unique,
+        "collector_unique": unique_found,
+        "sources": {
+            k: (
+                f"{h.found} jobs / {h.calls} calls / {h.errors} err"
+                + (f" / {getattr(h,'skipped',0)} skipped" if getattr(h, 'skipped', 0) else "")
+                + (f" / raw {getattr(h,'raw_found',None)}" if getattr(h, 'raw_found', None) is not None else "")
+            )
+            for k, h in result.health.items()
+        },
     }
     log.info("run summary: %s", summary)
     if not dry_run:
         from .db import now
         db.set_meta("last_run_finished_at", now())  # absent/older = the run was killed
         db.finish_run(run_id, summary, {
-            k: {"calls": h.calls, "found": h.found, "errors": h.errors, "last_error": h.last_error}
-            for k, h in result.health.items()}, alerts)
+            k: {
+                "calls": h.calls, "found": h.found, "errors": h.errors, "last_error": h.last_error,
+                "skipped": getattr(h, "skipped", 0), "raw_found": getattr(h, "raw_found", None),
+                "unique_found": getattr(h, "unique_found", None), "duration_sec": getattr(h, "duration_sec", None),
+                "cooldown_until": getattr(h, "cooldown_until", None), "details": getattr(h, "details", None),
+            }
+            for k, h in result.health.items()}, alerts)
 
     if tg and (cfg.get("telegram") or {}).get("send_run_summary", True):
         src = "\n".join(f"• {k}: {v}" for k, v in summary["sources"].items()) or "• (no sources ran)"

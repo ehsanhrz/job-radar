@@ -214,7 +214,7 @@ def test_pipeline_discovers_watches_and_sends(tmp_path, monkeypatch):
                       url="https://news.ycombinator.com/item?id=7", company="Acme Pay", location="Remote: Worldwide",
                       description="Apply at https://boards.greenhouse.io/acmepay/jobs/1")]
     found.call("hn", found=1)
-    monkeypatch.setattr(pipeline, "collect_all", lambda cfg, proxies, want_details=None: found)
+    monkeypatch.setattr(pipeline, "collect_all", lambda cfg, proxies, want_details=None, db=None: found)
     # Keep the fixture fresh: a hard-coded posting date eventually trips max_age_days.
     from copy import deepcopy
     from datetime import datetime, timezone

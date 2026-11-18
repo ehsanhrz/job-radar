@@ -49,7 +49,13 @@ CREATE TABLE IF NOT EXISTS source_runs (
     calls      INTEGER NOT NULL,
     found      INTEGER NOT NULL,
     errors     INTEGER NOT NULL,
-    last_error TEXT
+    last_error TEXT,
+    skipped    INTEGER NOT NULL DEFAULT 0,
+    duration_sec REAL,
+    raw_found  INTEGER,
+    unique_found INTEGER,
+    cooldown_until TEXT,
+    details    TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_runs_source ON source_runs(source, id);
 
@@ -85,6 +91,20 @@ CREATE TABLE IF NOT EXISTS ats_companies (
     empty_checks   INTEGER NOT NULL DEFAULT 0, -- checks in a row with nothing relevant
     PRIMARY KEY (ats, slug)
 );
+
+-- Per-source collector state for intervals, cooldowns, and incremental fetching.
+CREATE TABLE IF NOT EXISTS source_state (
+    source             TEXT PRIMARY KEY,
+    last_attempt_at    TEXT,
+    last_success_at    TEXT,
+    cooldown_until     TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    etag               TEXT,
+    last_modified      TEXT,
+    checkpoint         TEXT,
+    last_error         TEXT,
+    updated_at         TEXT
+);
 """
 
 
@@ -116,6 +136,16 @@ class DB:
         ats_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(ats_companies)")}
         if ats_cols and "empty_checks" not in ats_cols:
             self.conn.execute("ALTER TABLE ats_companies ADD COLUMN empty_checks INTEGER NOT NULL DEFAULT 0")
+        run_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(source_runs)")}
+        if run_cols:
+            for name, ddl in (("skipped", "INTEGER NOT NULL DEFAULT 0"), ("duration_sec", "REAL"),
+                              ("raw_found", "INTEGER"), ("unique_found", "INTEGER"),
+                              ("cooldown_until", "TEXT"), ("details", "TEXT")):
+                if name not in run_cols:
+                    self.conn.execute(f"ALTER TABLE source_runs ADD COLUMN {name} {ddl}")
+        self.conn.execute("CREATE TABLE IF NOT EXISTS source_state (source TEXT PRIMARY KEY, last_attempt_at TEXT, "
+                          "last_success_at TEXT, cooldown_until TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0, "
+                          "etag TEXT, last_modified TEXT, checkpoint TEXT, last_error TEXT, updated_at TEXT)")
         # The old v0.4 migration deleted pending Indeed records. Preserve history
         # across matching/database upgrades and retire that destructive cleanup.
         self.conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
@@ -270,11 +300,48 @@ class DB:
 
     # ---------- source health ----------
     def record_source_run(self, source: str, calls: int, found: int, errors: int,
-                          last_error: str | None) -> None:
+                          last_error: str | None, *, skipped: int = 0, duration_sec: float | None = None,
+                          raw_found: int | None = None, unique_found: int | None = None,
+                          cooldown_until: str | None = None, details: dict | str | None = None) -> None:
+        if isinstance(details, (dict, list)):
+            details = json.dumps(details, ensure_ascii=False)
         self.conn.execute(
-            "INSERT INTO source_runs (run_at, source, calls, found, errors, last_error) VALUES (?,?,?,?,?,?)",
-            (now(), source, calls, found, errors, last_error),
+            """INSERT INTO source_runs
+               (run_at, source, calls, found, errors, last_error, skipped, duration_sec, raw_found, unique_found, cooldown_until, details)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (now(), source, calls, found, errors, last_error, int(skipped), duration_sec,
+             raw_found, unique_found, cooldown_until, details),
         )
+        self.conn.commit()
+
+    # ---------- source state ----------
+    def get_source_state(self, source: str) -> dict | None:
+        row = self.conn.execute("SELECT * FROM source_state WHERE source=?", (source,)).fetchone()
+        if not row:
+            return None
+        state = dict(row)
+        raw = state.get("checkpoint")
+        if raw:
+            try:
+                state["checkpoint"] = json.loads(raw)
+            except (TypeError, ValueError):
+                pass
+        return state
+
+    def save_source_state(self, source: str, **fields) -> None:
+        if "checkpoint" in fields and isinstance(fields["checkpoint"], (dict, list)):
+            fields["checkpoint"] = json.dumps(fields["checkpoint"], ensure_ascii=False)
+        fields["updated_at"] = now()
+        existing = self.conn.execute("SELECT 1 FROM source_state WHERE source=?", (source,)).fetchone()
+        if existing:
+            sets = ", ".join(f"{k}=?" for k in fields)
+            self.conn.execute(f"UPDATE source_state SET {sets} WHERE source=?",
+                              (*fields.values(), source))
+        else:
+            cols = ", ".join(["source", *fields.keys()])
+            marks = ", ".join(["?"] * (1 + len(fields)))
+            self.conn.execute(f"INSERT INTO source_state ({cols}) VALUES ({marks})",
+                              (source, *fields.values()))
         self.conn.commit()
 
     def last_source_runs(self, source: str, n: int) -> list[sqlite3.Row]:

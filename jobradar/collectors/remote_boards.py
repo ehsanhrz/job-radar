@@ -19,11 +19,12 @@ from typing import Any, Callable
 import requests
 
 from ..models import Job
-from .base import CollectResult
+from .base import (CollectResult, cooldown_active_until, get_state, record_attempt,
+                   record_failure, record_success, should_skip_fetch)
 
 log = logging.getLogger(__name__)
 UA = {"User-Agent": "job-radar/1.0 (personal job search)"}
-TAG_RE = re.compile(r"<[^>]+>")
+TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _text(html: str | None) -> str:
@@ -147,7 +148,7 @@ BOARDS: dict[str, Callable[[requests.Session, str, int], list[Job]]] = {
 }
 
 
-def collect(cfg: dict, session: requests.Session | None = None, sleep_fn=time.sleep) -> CollectResult:
+def collect(cfg: dict, session: requests.Session | None = None, sleep_fn=time.sleep, db=None) -> CollectResult:
     rcfg = (cfg.get("extra_sources") or {}).get("remote_boards") or {}
     result = CollectResult()
     if not rcfg.get("enabled", False):
@@ -156,22 +157,71 @@ def collect(cfg: dict, session: requests.Session | None = None, sleep_fn=time.sl
     terms = rcfg.get("search_terms") or [".net"]
     pages = int(rcfg.get("pages", 1))
     skip = {b: {t.lower() for t in ts or []} for b, ts in (rcfg.get("skip_terms") or {}).items()}
+    intervals = rcfg.get("min_fetch_interval_hours") or {}
+    cooldowns = rcfg.get("cooldown_minutes_on_error") or {}
+    default_interval = float(rcfg.get("default_min_fetch_interval_hours", 1))
+    default_cooldown = int(rcfg.get("default_cooldown_minutes", 20))
     for board in rcfg.get("boards") or list(BOARDS):
         fetch = BOARDS.get(board)
         if not fetch:
             log.warning("unknown remote board %r (known: %s)", board, ", ".join(BOARDS))
             continue
+        state = get_state(db, board)
+        try:
+            min_interval = float(intervals.get(board, default_interval))
+        except (TypeError, ValueError):
+            min_interval = default_interval
+        skip_fetch, reason = should_skip_fetch(state, min_interval)
+        if skip_fetch:
+            result.skip(board, reason or "skipped", cooldown_until=cooldown_active_until(state))
+            log.info("%s skipped: %s", board, reason)
+            continue
+        started = time.perf_counter()
+        record_attempt(db, board)
+        board_jobs = []
+        board_error = None
+        calls = 0
+        raw_found = 0
         for term in terms:
             if term.lower() in skip.get(board, ()):
                 continue
+            calls += 1
             try:
                 jobs = fetch(session, term, pages)
             except Exception as e:  # noqa: BLE001 - one board failing must not stop the run
+                board_error = f"{type(e).__name__}: {e}"
                 log.warning("%s %r failed: %s", board, term, e)
-                result.call(board, error=f"{type(e).__name__}: {e}")
                 continue
-            result.jobs.extend(jobs)
-            result.call(board, found=len(jobs))
+            raw_found += len(jobs)
+            board_jobs.extend(jobs)
             log.info("%s | %r -> %d jobs", board, term, len(jobs))
             sleep_fn(1.5)
-    return result
+        # dedupe within-board responses in this run
+        seen_urls = set()
+        unique_jobs = []
+        for j in board_jobs:
+            if j.url in seen_urls:
+                continue
+            seen_urls.add(j.url)
+            unique_jobs.append(j)
+        duration = round(time.perf_counter() - started, 3)
+        h = result.health[board]
+        h.calls = calls
+        h.found = len(unique_jobs)
+        h.raw_found = raw_found
+        h.unique_found = len(unique_jobs)
+        h.errors = 1 if board_error and not unique_jobs else 0
+        h.last_error = board_error[:500] if board_error else None
+        h.duration_sec = duration
+        h.details = {"terms": len(terms), "raw_found": raw_found, "unique_in_response": len(unique_jobs)}
+        if board_error and not unique_jobs:
+            try:
+                cd = int(cooldowns.get(board, default_cooldown))
+            except (TypeError, ValueError):
+                cd = default_cooldown
+            record_failure(db, board, board_error, cooldown_minutes=cd)
+        else:
+            record_success(db, board, checkpoint={"last_raw_found": raw_found, "last_unique": len(unique_jobs)},
+                           last_error=board_error[:500] if board_error else None)
+        result.jobs.extend(unique_jobs)
+    return result

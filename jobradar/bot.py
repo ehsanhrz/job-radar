@@ -316,7 +316,11 @@ def handle_update(db: DB, tg: Telegram, settings: Settings, upd: dict, allow_run
         _rescore(db, tg, settings, coordinator)
     elif text in ("/run", "/run force"):
         if coordinator is not None:
-            tg.send("🛰 Starting a run…" if coordinator.start_manual() else "A run is already in progress.")
+            try:
+                started = coordinator.start_manual("telegram")
+            except TypeError:
+                started = coordinator.start_manual()
+            tg.send("🛰 Starting a run…" if started else "A run is already in progress.")
         elif not allow_run:
             tg.send("/run only works when the bot is running in always-on mode.")
         else:

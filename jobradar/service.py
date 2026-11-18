@@ -1,6 +1,7 @@
 """Coordinated single-process runtime for polling and scheduled job runs."""
 from __future__ import annotations
 
+import inspect
 import logging
 import random
 import threading
@@ -35,11 +36,14 @@ def seconds_until_next_run(database: DB, interval_seconds: float, jitter_seconds
             when = datetime.fromisoformat(override)
             if when.tzinfo is None:
                 when = when.replace(tzinfo=timezone.utc)
-            return max(60.0, (when - datetime.now(timezone.utc)).total_seconds())
+            delay = max(60.0, (when - datetime.now(timezone.utc)).total_seconds())
+            log.info("resume override active: next run in %.0f min (UTC schedule)", delay / 60)
+            return delay
         except (TypeError, ValueError):
             log.warning("invalid %s value %r; using the regular schedule", NEXT_RUN_KEY, override)
     last = database.get_meta(LAST_RUN_KEY)
     if not last:
+        log.info("no previous run recorded; scheduling first run immediately")
         return 0.0
     try:
         started = datetime.fromisoformat(last)
@@ -80,18 +84,27 @@ def resume_interrupted_if_due(database: DB, interval_seconds: float) -> bool:
 class RunCoordinator:
     """Allows at most one run_once execution; manual requests never queue."""
 
-    def __init__(self, run: Callable[[], object]):
+    def __init__(self, run: Callable[..., object]):
         self._run = run
+        try:
+            self._takes_trigger = len(inspect.signature(run).parameters) >= 1
+        except (TypeError, ValueError):
+            self._takes_trigger = False
         self._lock = threading.Lock()
         self._threads: set[threading.Thread] = set()
         self._threads_lock = threading.Lock()
 
-    def execute_scheduled(self) -> bool:
+    def _invoke(self, trigger: str) -> object:
+        if self._takes_trigger:
+            return self._run(trigger)
+        return self._run()
+
+    def execute_scheduled(self, trigger: str = "schedule") -> bool:
         if not self._lock.acquire(blocking=False):
             log.info("scheduled execution skipped: another run is active")
             return False
         try:
-            self._run()
+            self._invoke(trigger)
             return True
         except Exception:  # noqa: BLE001
             log.exception("scheduled run failed")
@@ -113,13 +126,13 @@ class RunCoordinator:
         finally:
             self._lock.release()
 
-    def start_manual(self) -> bool:
+    def start_manual(self, trigger: str = "manual") -> bool:
         if not self._lock.acquire(blocking=False):
             return False
 
         def worker() -> None:
             try:
-                self._run()
+                self._invoke(trigger)
             except Exception:  # noqa: BLE001
                 log.exception("manual run failed")
             finally:
@@ -164,7 +177,13 @@ def run_service(settings: Settings, stop_event: threading.Event | None = None,
     stop = stop_event or threading.Event()
     database = DB(settings.db_path)
     runner = bot_runner or run_bot
-    execute = run or (lambda: run_once(settings, process_updates=False))
+    if run is not None:
+        try:
+            execute = run if len(inspect.signature(run).parameters) >= 1 else (lambda _trigger=None: run())
+        except (TypeError, ValueError):
+            execute = run
+    else:
+        execute = lambda trigger="schedule": run_once(settings, process_updates=False, trigger=trigger)
     coordinator = RunCoordinator(execute)
     ready = threading.Event()
     bot = threading.Thread(target=runner, args=(settings, coordinator, stop, ready),
@@ -179,6 +198,8 @@ def run_service(settings: Settings, stop_event: threading.Event | None = None,
     interval = float(schedule.get("interval_hours", 6)) * 3600
     jitter_seconds = float(schedule.get("jitter_minutes", 30)) * 60
     wait_fn = wait or stop.wait
+    log.info("service schedule: every %.2f h ± %.0f min (UTC-anchored to last_run_at)",
+             interval / 3600, jitter_seconds / 60)
     if resume_interrupted_if_due(database, interval):
         log.info("previous run was interrupted (restart/redeploy): running again soon")
     try:
@@ -195,7 +216,7 @@ def run_service(settings: Settings, stop_event: threading.Event | None = None,
             # manual runs; doing it here makes the scheduler's restart contract
             # hold even if setup fails before run_once reaches its own write.
             database.set_meta(LAST_RUN_KEY, now())
-            coordinator.execute_scheduled()
+            coordinator.execute_scheduled("schedule")
     finally:
         stop.set()
         bot.join()
